@@ -563,3 +563,32 @@ Recorded 2026-11-01 from Task 1 (probe build on the real TV).
 
 **Cold boot**
 - The service does NOT start by itself. The owner accepted opening the app once after a cold boot (spec goal 3 and Task 13 check 6 are updated accordingly).
+
+## Acceptance results (2026-11-01, on the TV, with the owner)
+
+Build `1574848`, plus the standalone control app (`bdc57ba`).
+
+| Check | Result |
+|---|---|
+| 1. Bulbs follow the screen with no visible stepping | PASS: "follows smoothly" |
+| 2. Black screen holds the colour at a dim glow | Not checked separately. Same code path as the tuned Mac bridge; MinLevel is now always reached |
+| 3. Near-black scenes don't flicker | Not checked separately. Covered by check 1 viewing |
+| 4. Sync off → warm white | PASS |
+| 5. Remote power-off → warm white | PASS |
+| 6. Cold boot, then open the app once → syncing | PASS after the fix below. Settings and `enabled` survived the power cycle |
+| 7. A changed setting survives a restart | PASS. `bulbMinLevel` 20 kept; 300 rejected and not saved; reset restores the defaults |
+| 8. TV responsiveness | No issue reported |
+| Wake from standby resumes sync | PASS |
+
+**Found during acceptance:** the pinwheel tile in My Apps was the HyperTizen *service* package. A service has no UI, so Samsung shows "Please wait a moment and try again" when it's opened. TizenBrew was never installed on this TV, so the control app never existed there.
+
+**Fix (owner's choice: standalone, no push):** `HyperTizenUI` is now packaged as its own wgt (`6jwjAZfoVq.HyperTizenUI`), installed from the Mac with the HyperTizen signing profile. When opened, it starts the service itself (`js/service.js`) and talks to it on `127.0.0.1`. The owner confirmed the app shows its controls and sync starts after the service was stopped.
+
+To rebuild and reinstall the control app from `HyperTizenUI/`:
+1. Copy the files to an empty folder.
+2. Run `tizen package -t wgt -s HyperTizen -- <folder>`.
+3. Run `tizen install -n <folder>/HyperTizen.wgt -s 192.168.0.4:26101`.
+
+**Optional checks not run** (the owner skipped them):
+- pause for about 10 minutes, then power off (tests the keepalive)
+- power-cycle one bulb at the wall during a static scene, then power off (tests a dead session)
