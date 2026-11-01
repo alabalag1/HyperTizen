@@ -648,7 +648,7 @@ namespace HyperTizen.Capture
             }
 
             // ponytail: raw dump every 100 frames to check the value range on this firmware; remove once settled
-            if (_frameCount++ % 100 == 0)
+            if (_frameCount++ % 20 == 0)
             {
                 var parts = new string[colorData.Length];
                 for (int k = 0; k < colorData.Length; k++)
