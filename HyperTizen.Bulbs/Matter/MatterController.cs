@@ -60,6 +60,10 @@ namespace HyperTizen.Bulbs.Matter
         /// <summary>How long to wait for the response once the request is acked (matter.js: 2 s expected processing + margin).</summary>
         internal TimeSpan ResponseTimeout = TimeSpan.FromSeconds(3);
 
+        /// <summary>How long to wait for Sigma2 once Sigma1 is acked: the bulb's CASE crypto can take seconds. Only the
+        /// Sigma2 wait; invokes (warm white included) and Sigma3 keep <see cref="ResponseTimeout"/>.</summary>
+        internal TimeSpan Sigma2Timeout = TimeSpan.FromSeconds(8);
+
         /// <param name="interfaceScope">network interface name ("wlan0", "en0"), resolved to the IPv6 scope index when connecting</param>
         public MatterController(MatterCredentials creds, string interfaceScope, Action<string> log)
             : this(creds, (Func<byte[], IPEndPoint, Task>)null, log)
@@ -167,7 +171,8 @@ namespace HyperTizen.Bulbs.Matter
                 ulong eph = BitConverter.ToUInt64(SessionCrypto.RandomBytes(8), 0) & 0xFFFFFFEFFFFFFFFF; // operational node id range
                 ushort exch = NextExchange();
                 Log(node, "CASE Sigma1 to " + ep + ", session " + localId);
-                var s2 = await Request(null, exch, ProtoSecureChannel, CaseInitiator.OpSigma1, cs.Sigma1(), eph, ct, ep).ConfigureAwait(false);
+                var s2 = await Request(null, exch, ProtoSecureChannel, CaseInitiator.OpSigma1, cs.Sigma1(), eph, ct, ep,
+                    responseTimeout: Sigma2Timeout).ConfigureAwait(false);
                 if (s2 == null) { Log(node, "no answer to Sigma1 at " + ep); continue; }
                 if (s2.Proto.Opcode != CaseInitiator.OpSigma2)
                 {
@@ -204,7 +209,7 @@ namespace HyperTizen.Bulbs.Matter
         /// <param name="s">null for the unsecured session (CASE), with <paramref name="eph"/> our ephemeral node id</param>
         /// <param name="ackCounter">the peer message on this exchange this one acknowledges; copies of it are then ignored</param>
         private async Task<Msg> Request(SecureSession s, ushort exch, ushort proto, byte opcode, byte[] body, ulong eph, CancellationToken ct,
-            IPEndPoint ep = null, uint? ackCounter = null, int transmissions = Mrp.MaxTransmissions)
+            IPEndPoint ep = null, uint? ackCounter = null, int transmissions = Mrp.MaxTransmissions, TimeSpan? responseTimeout = null)
         {
             EnsureSocket();
             var p = new Pending { Routed = ackCounter };
@@ -230,7 +235,7 @@ namespace HyperTizen.Bulbs.Matter
                     ct.ThrowIfCancellationRequested();
                 }
                 if (!p.Acked.Task.IsCompleted) return null;
-                await Task.WhenAny(p.Response.Task, Task.Delay(ResponseTimeout, ct)).ConfigureAwait(false);
+                await Task.WhenAny(p.Response.Task, Task.Delay(responseTimeout ?? ResponseTimeout, ct)).ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
                 return p.Response.Task.IsCompleted ? p.Response.Task.Result : null;
             }
@@ -318,6 +323,7 @@ namespace HyperTizen.Bulbs.Matter
 
         private async Task ReceiveLoop(UdpClient udp)
         {
+            int errors = 0;
             while (!_disposed)
             {
                 UdpReceiveResult r;
@@ -326,9 +332,11 @@ namespace HyperTizen.Bulbs.Matter
                 catch (SocketException e)
                 {
                     if (_disposed) return;
-                    _log("matter: receive error " + e.SocketErrorCode);
+                    if (errors++ % 20 == 0) _log("matter: receive error " + e.SocketErrorCode + " (" + errors + ")");
+                    await Task.Delay(100).ConfigureAwait(false); // a failing socket would otherwise spin
                     continue;
                 }
+                errors = 0;
                 OnDatagram(r.Buffer, r.RemoteEndPoint);
             }
         }

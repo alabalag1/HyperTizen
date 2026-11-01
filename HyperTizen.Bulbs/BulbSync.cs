@@ -86,9 +86,14 @@ namespace HyperTizen.Bulbs
             {
                 // Forget this run's frame, so the next run can't replay a scene from before the stop.
                 // Reset here rather than in RunAsync: a SetFrame made before RunAsync is fresh and must count.
-                lock (_frameLock) { _smoother = new HybridSmoother(); _hasFrame = _hasOutput = false; }
+                ResetFrame();
                 _running = false;
             }
+        }
+
+        void ResetFrame()
+        {
+            lock (_frameLock) { _smoother = new HybridSmoother(); _hasFrame = _hasOutput = false; }
         }
 
         /// <summary>No-op unless running. Cancels in-flight sends, then fades to warm white every bulb that was
@@ -124,6 +129,7 @@ namespace HyperTizen.Bulbs
             {
                 dl.Cancel();    // stops the deadline timer and any warm white still in flight
                 dl.Dispose();
+                ResetFrame();   // again: a capture frame can land during the warm-white window
                 _running = false;
             }
         }

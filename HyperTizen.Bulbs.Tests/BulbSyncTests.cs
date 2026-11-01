@@ -404,5 +404,24 @@ namespace HyperTizen.Bulbs.Tests
             _clock.Advance(300);
             Assert.Contains(_t.Calls.Skip(from), c => c.Node == 1 && c.Method == "hue");
         }
+
+        [Fact]
+        public void FrameDuringWarmWhite_NotReplayedNextRun()
+        {
+            _sync.SetFrame(Red, Red);
+            _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(2000);
+            _t.DelayMs = _ => 100;                            // warm white takes a while
+            var stop = Stop();
+            _sync.SetFrame(new Rgb(0, 0, 255), new Rgb(0, 0, 255));   // a capture frame racing the stop
+            _clock.Advance(1000);
+            Assert.True(stop.IsCompletedSuccessfully);
+
+            _t.DelayMs = _ => 0;
+            int n = _t.Calls.Count;
+            _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(2000);
+            Assert.Equal(n, _t.Calls.Count);
+        }
     }
 }

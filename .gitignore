@@ -9,3 +9,4 @@ bin
 references/tizen9_os_files
 HyperTizen/out/
 HyperTizen/res/bulbs.json
+.DS_Store

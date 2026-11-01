@@ -424,6 +424,8 @@ namespace HyperTizen.WebSocket
                                     $"Capture state changed: {wasEnabled} -> {value}");
                             }
                         }
+                        // Persist now, not after the Stop below (up to ~9 s): a kill during it must not resurrect "enabled".
+                        Preference.Set(setConfigEvent.key, setConfigEvent.value);
 
                         // Perform state-dependent actions outside the lock.
                         // "true" always (re)starts, even unchanged: the user's recovery path for a dead loop

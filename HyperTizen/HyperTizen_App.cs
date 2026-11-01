@@ -107,8 +107,8 @@ namespace HyperTizen
             }
 
             // STEP 7: Continue normal startup
+            client = new HyperionClient(); // before subscribing: the handler dereferences it
             Display.StateChanged += Display_StateChanged;
-            client = new HyperionClient();
 
             // Show service started notification (always shown)
             Notification startNotif = new Notification
@@ -165,6 +165,17 @@ namespace HyperTizen
 
         protected override void OnTerminate()
         {
+            // Best effort: end sync in warm white before going (StopInner runs on the thread pool, so no deadlock).
+            // Before the WebSocket server stops, so its log lines still go out.
+            try
+            {
+                client?.Stop().Wait(TimeSpan.FromSeconds(4.5));
+            }
+            catch (Exception ex)
+            {
+                Helper.Log.Write(Helper.eLogType.Warning, $"Stop on terminate failed: {ex.Message}");
+            }
+
             // Show service stopped notification (always shown)
             Notification stopNotif = new Notification
             {
@@ -187,7 +198,7 @@ namespace HyperTizen
         public static class Configuration
         {
             public static string RPCServer = Preference.Contains("rpcServer") ? Preference.Get<string>("rpcServer") : null;
-            public static bool Enabled = bool.Parse(Preference.Get<string>("enabled"));
+            public static volatile bool Enabled = bool.Parse(Preference.Get<string>("enabled"));
         }
     }
 }
