@@ -6,7 +6,7 @@ namespace HyperTizen.Bulbs
     /// NV12 frame -> two left-edge LED colours, reproducing HyperHDR 22.0.0 with the
     /// Mac's config: flatbuffer NV12 (HDR off), "advanced" mapping, gamma 1.5,
     /// backlightThreshold 0.0039 coloured, every other adjustment identity.
-    /// Values are the 8-bit numbers HyperHDR sends over udpraw, before smoothing.
+    /// Values are unrounded 0-255, the smoothing input; ToDevice8Bit gives the numbers HyperHDR sends over udpraw.
     /// </summary>
     public static class ColourChain
     {
@@ -71,13 +71,18 @@ namespace HyperTizen.Bulbs
 
         static int To8(double x) => (int)Math.Max(0, Math.Min(255, Math.Floor(x + 0.5)));
 
-        /// <summary>applyyAllProcessingSteps (non-identity steps only), steady-state smoothing, LedDevice::write.</summary>
+        /// <summary>LedDevice::write: round_to_0_255 (std::lround of the clamped value). Apply after smoothing.</summary>
+        public static Rgb ToDevice8Bit(Rgb v) => new Rgb(To255(v.R), To255(v.G), To255(v.B));
+
+        static double To255(double x) => Math.Round(Math.Max(0, Math.Min(255, x)), MidpointRounding.AwayFromZero);
+
+        /// <summary>applyyAllProcessingSteps (non-identity steps only) and the interpolator's getCurrentColors clamp, times 255.</summary>
         static double Output(float linear)
         {
             float c = Lerp(GammaLut, Lerp(LinearToSrgb, Clamp01(linear)));
             c = Math.Max(c, MinBacklight);                       // applyMinimalBacklight, coloured
             c = Math.Min(Math.Max(c, MinBacklight), 1f);         // interpolator getCurrentColors clamp
-            return Math.Round(Math.Max(0f, Math.Min(255f, c * 255.0f)), MidpointRounding.AwayFromZero); // std::lround
+            return c * 255.0f;
         }
 
         static float Lerp(float[] lut, float x)
