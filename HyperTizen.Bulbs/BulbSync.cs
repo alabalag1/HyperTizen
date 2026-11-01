@@ -128,12 +128,17 @@ namespace HyperTizen.Bulbs
         {
             try
             {
-                bool level = await _transport.MoveToLevelWithOnOff(node, WarmLevel, WarmTenths, ct).ConfigureAwait(false);
-                bool temp = await _transport.MoveToColorTemperature(node, WarmMireds, WarmTenths, ct).ConfigureAwait(false);
+                // One retry each while the deadline allows (ct is cancelled once it passes): a silently evicted
+                // session fails the first invoke and is dropped, so the retry re-runs CASE.
+                bool level = await Retry(() => _transport.MoveToLevelWithOnOff(node, WarmLevel, WarmTenths, ct), ct).ConfigureAwait(false);
+                bool temp = await Retry(() => _transport.MoveToColorTemperature(node, WarmMireds, WarmTenths, ct), ct).ConfigureAwait(false);
                 if (!level || !temp) _log($"node {node}: warm white not confirmed");
             }
             catch (Exception e) { _log($"node {node}: warm white failed: {e.Message}"); }
         }
+
+        static async Task<bool> Retry(Func<Task<bool>> call, CancellationToken ct) =>
+            await call().ConfigureAwait(false) || (!ct.IsCancellationRequested && await call().ConfigureAwait(false));
 
         async Task TickLoop(CancellationToken ct)
         {

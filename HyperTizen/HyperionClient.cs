@@ -105,8 +105,21 @@ namespace HyperTizen
         // True while Start() runs (the capture loop is alive); Stop() waits for it to drop.
         public bool IsRunning => _isRunning;
 
+        // Warm-white deadline: a CASE re-handshake takes ~3 s, plus the two invokes; the network stays up
+        // >= 5 s after the remote's power-off (TV probe, Task 1).
+        static readonly TimeSpan StopDeadline = TimeSpan.FromSeconds(4);
+
+        // The latest Stop, chained after any earlier one; Start waits for it so a quick off/on ends running.
+        private Task _stopping = Task.CompletedTask;
+        private int _badFrames = 0;
+
         public async Task Start()
         {
+            // A wake during a stop: let the stop finish first, so this Start isn't refused as "already running"
+            Task stopping;
+            lock (_stateLock) stopping = _stopping;
+            await stopping;
+
             // Only SetConfig "enabled" changes what the user wants; every Start caller goes through this gate.
             if (!App.Configuration.Enabled)
             {
@@ -454,8 +467,20 @@ namespace HyperTizen
                             // window): a frame set then would be replayed at the start of the next run.
                             if (App.Bulbs?.IsRunning == true)
                             {
-                                var (lower, upper) = ColourChain.LeftZones(captureResult.YData, captureResult.UVData, captureResult.Width, captureResult.Height);
-                                App.Bulbs.SetFrame(lower, upper);
+                                byte[] y = captureResult.YData, uv = captureResult.UVData;
+                                int w = captureResult.Width, h = captureResult.Height;
+                                // NV12: Y is w*h, UV is w per row pair. Width >= 20 so the 5% edge zone isn't empty.
+                                if (y == null || uv == null || w < 20 || h < 2 || y.Length < w * h || uv.Length < w * ((h + 1) / 2))
+                                {
+                                    if (++_badFrames % 100 == 1)
+                                        Helper.Log.Write(Helper.eLogType.Warning,
+                                            $"Skipping bad frame #{_badFrames}: {w}x{h}, Y={y?.Length}, UV={uv?.Length}");
+                                }
+                                else
+                                {
+                                    var (lower, upper) = ColourChain.LeftZones(y, uv, w, h);
+                                    App.Bulbs.SetFrame(lower, upper);
+                                }
                             }
 
                             // Update statistics
@@ -528,10 +553,11 @@ namespace HyperTizen
             }
             finally
             {
-                // Any loop exit ends the bulb run. No warm white here (only Stop() sends it), so after
-                // too many capture errors the bulbs keep their last colour.
+                // Any loop exit ends the bulb run in warm white (e.g. too many capture errors, which never
+                // calls Stop). After a Stop this is a no-op: the bulbs are already stopped.
                 try
                 {
+                    if (App.Bulbs != null) await App.Bulbs.StopToWarmWhiteAsync(StopDeadline);
                     runCts?.Cancel();
                     await bulbRun;
                 }
@@ -544,7 +570,15 @@ namespace HyperTizen
             }
         }
 
-        public async Task Stop()
+        // Records the stop synchronously (so a Start right after sees it) and runs it on the thread pool,
+        // after any stop already in progress.
+        public Task Stop()
+        {
+            lock (_stateLock)
+                return _stopping = _stopping.ContinueWith(_ => StopInner(), TaskScheduler.Default).Unwrap();
+        }
+
+        private async Task StopInner()
         {
             Helper.Log.Write(Helper.eLogType.Info, "Stopping HyperionClient...");
 
@@ -554,7 +588,7 @@ namespace HyperTizen
             {
                 try
                 {
-                    await App.Bulbs.StopToWarmWhiteAsync(TimeSpan.FromSeconds(2));
+                    await App.Bulbs.StopToWarmWhiteAsync(StopDeadline);
                 }
                 catch (Exception ex)
                 {

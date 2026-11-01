@@ -197,6 +197,27 @@ namespace HyperTizen.Bulbs.Tests
         }
 
         [Fact]
+        public void WarmWhite_FirstAttemptFails_Retries()
+        {
+            _sync.SetFrame(Red, Red);
+            var run = _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(250);
+            // node 1's first warm-white level command fails (an evicted session), everything else succeeds
+            _t.Fails = n => n == 1 && _t.Calls.Last() is { Method: "level", Value: 127 }
+                && Of(1, "level").Count(c => c.Value == 127) == 1;
+
+            var stop = Stop();
+            _clock.Advance(100);
+            Assert.True(stop.IsCompletedSuccessfully);
+            Assert.Equal(2, Of(1, "level").Count(c => c.Value == 127));    // retried once
+            Assert.Single(Of(2, "level"), c => c.Value == 127);              // no retry when it succeeds
+            AssertEndsWarmWhite(1);
+            AssertEndsWarmWhite(2);
+            Assert.DoesNotContain(_log, l => l.Contains("warm white"));
+            Assert.True(run.IsCompletedSuccessfully);
+        }
+
+        [Fact]
         public void TuningChange_AppliesWithoutRestart()
         {
             _sync.SetFrame(Black, Black);

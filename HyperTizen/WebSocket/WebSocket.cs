@@ -425,8 +425,11 @@ namespace HyperTizen.WebSocket
                             }
                         }
 
-                        // Perform state-dependent actions outside the lock
-                        if (stateChanged)
+                        // Perform state-dependent actions outside the lock.
+                        // "true" always (re)starts, even unchanged: the user's recovery path for a dead loop
+                        // (Start's running guard prevents a double start).
+                        newState = value;
+                        if (stateChanged || value)
                         {
                             if (App.client == null)
                             {

@@ -124,7 +124,9 @@ namespace HyperTizen
         {
             if (e.State == DisplayState.Off)
             {
-                Task.Run(() => client.Stop());
+                // Called directly: Stop() records itself before returning and runs on the thread pool,
+                // so the Start below (on a later Normal event) is guaranteed to wait for it.
+                _ = client.Stop();
             } else if (e.State == DisplayState.Normal)
             {
                 Task.Run(() => client.Start());
