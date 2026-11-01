@@ -592,3 +592,11 @@ To rebuild and reinstall the control app from `HyperTizenUI/`:
 **Optional checks not run** (the owner skipped them):
 - pause for about 10 minutes, then power off (tests the keepalive)
 - power-cycle one bulb at the wall during a static scene, then power off (tests a dead session)
+
+## Known follow-ups (parked during review)
+
+- **N1.** On Normal→Off→Normal during Start's init, a wake can be lost and sync stays off until it's re-enabled. Fix: in `HyperionClient.StopInner`, move the `_isRunning` wait out of the `_cancellationTokenSource != null` branch.
+- **N2.** Start's generation snapshot depends on thread-pool dispatch. A sub-millisecond Off→Normal→Off burst could leave capture running with the TV off. Fix: take the generation snapshot in the `Display_StateChanged` handler and pass it to `Start`.
+- **Warm-white timing.** Warm white on a session that dies just before power-off uses about 3.9 s of the 4 s deadline, and the 2-transmission fail-fast hasn't been tried on the real bulbs. Run the two optional checks listed above.
+- **Pre-existing in `HyperionClient`.** The Stop timeout disposes the token source under a live loop. A Stop during init races the capture-method cleanup. `BroadcastLog` calls `.Wait()` under a lock, which can stall the loops.
+- **Minor polish.** The README still says "Start/Stop Capture". The gamma field allows only 1 decimal place. A refused Start still broadcasts "started".
