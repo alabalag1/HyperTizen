@@ -16,6 +16,9 @@ namespace HyperTizen.Bulbs
     {
         const double TickMs = 20, CycleMinMs = 100;     // HyperHDR updateFrequency 50 Hz; bridge MAX_HZ 10
         const int WarmLevel = 127, WarmMireds = 370, WarmTenths = 10;
+        // Nothing confirmed for this long on a static scene: re-send the level, so a dead session (bulb reboot,
+        // eviction) is found and re-established while running, not at power-off when warm white needs it.
+        const double KeepaliveMs = 30000;
 
         readonly IBulbTransport _transport;
         readonly IReadOnlyList<BulbEntry> _bulbs;
@@ -130,8 +133,9 @@ namespace HyperTizen.Bulbs
             {
                 // One retry each while the deadline allows (ct is cancelled once it passes): a silently evicted
                 // session fails the first invoke and is dropped, so the retry re-runs CASE.
-                bool level = await Retry(() => _transport.MoveToLevelWithOnOff(node, WarmLevel, WarmTenths, ct), ct).ConfigureAwait(false);
-                bool temp = await Retry(() => _transport.MoveToColorTemperature(node, WarmMireds, WarmTenths, ct), ct).ConfigureAwait(false);
+                // failFast: a dead session gives up after ~0.7 s, not ~4 s, so the retry's CASE fits the deadline
+                bool level = await Retry(() => _transport.MoveToLevelWithOnOff(node, WarmLevel, WarmTenths, ct, failFast: true), ct).ConfigureAwait(false);
+                bool temp = await Retry(() => _transport.MoveToColorTemperature(node, WarmMireds, WarmTenths, ct, failFast: true), ct).ConfigureAwait(false);
                 if (!level || !temp) _log($"node {node}: warm white not confirmed");
             }
             catch (Exception e) { _log($"node {node}: warm white failed: {e.Message}"); }
@@ -174,7 +178,7 @@ namespace HyperTizen.Bulbs
             MatterColour? colour = null;
             int? level = null;
             int failures = 0;
-            double cycleMs = 300, last = _now();
+            double cycleMs = 300, last = _now(), confirmed = last;
             for (;;)
             {
                 ct.ThrowIfCancellationRequested();
@@ -193,17 +197,20 @@ namespace HyperTizen.Bulbs
                     {
                         if (await Send(node, () => _transport.MoveToHueAndSaturation(node, Clamp(next.Hue.Value, 0, 254),
                                 Clamp(next.Sat.Value, 0, 254), Clamp(fade, 0, 65534), ct), ct).ConfigureAwait(false))
-                            colour = next;
+                        { colour = next; confirmed = _now(); }
                         else ok = false;
                         sent++;
                     }
                     // Deviation from the bridge: its >3 threshold can strand a fade-out at MinLevel + 1..3,
                     // so the floor itself is always sent.
-                    if (BulbMapper.LevelChanged(level, next.Level) || (next.Level == tuning.MinLevel && level != next.Level))
+                    bool levelDue = BulbMapper.LevelChanged(level, next.Level) || (next.Level == tuning.MinLevel && level != next.Level);
+                    bool keepalive = !levelDue && sent == 0 && level != null && t0 - confirmed >= KeepaliveMs;
+                    if (levelDue || keepalive)
                     {
-                        if (await Send(node, () => _transport.MoveToLevelWithOnOff(node, Clamp(next.Level, 1, 254),
+                        int lv = levelDue ? next.Level : level.Value;    // a keepalive re-sends the current level
+                        if (await Send(node, () => _transport.MoveToLevelWithOnOff(node, Clamp(lv, 1, 254),
                                 Clamp(fade, 0, 65534), ct), ct).ConfigureAwait(false))
-                            level = next.Level;
+                        { level = lv; confirmed = _now(); }
                         else ok = false;
                         sent++;
                     }

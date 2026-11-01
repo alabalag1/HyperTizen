@@ -48,30 +48,31 @@ namespace HyperTizen.Bulbs.Tests
         }
     }
 
-    sealed record Call(string Method, ulong Node, int Value, int Sat, int Tenths, double At);
+    sealed record Call(string Method, ulong Node, int Value, int Sat, int Tenths, double At, bool FailFast);
 
     sealed class FakeTransport : IBulbTransport
     {
         public readonly List<Call> Calls = new();
-        public Func<string, double> DelayMs = _ => 0;    // by method: "hue", "level", "ct"
-        public Func<ulong, bool> Fails = _ => false;
+        public Func<Call, double> DelayMs = _ => 0;
+        public Func<Call, bool> Fails = _ => false;
         public int Cancelled;
         readonly FakeClock _clock;
         public FakeTransport(FakeClock clock) { _clock = clock; }
 
-        public Task<bool> MoveToHueAndSaturation(ulong node, int hue, int sat, int tenths, CancellationToken ct) => Do("hue", node, hue, sat, tenths, ct);
-        public Task<bool> MoveToLevelWithOnOff(ulong node, int level, int tenths, CancellationToken ct) => Do("level", node, level, 0, tenths, ct);
-        public Task<bool> MoveToColorTemperature(ulong node, int mireds, int tenths, CancellationToken ct) => Do("ct", node, mireds, 0, tenths, ct);
+        public Task<bool> MoveToHueAndSaturation(ulong node, int hue, int sat, int tenths, CancellationToken ct) => Do("hue", node, hue, sat, tenths, ct, false);
+        public Task<bool> MoveToLevelWithOnOff(ulong node, int level, int tenths, CancellationToken ct, bool failFast = false) => Do("level", node, level, 0, tenths, ct, failFast);
+        public Task<bool> MoveToColorTemperature(ulong node, int mireds, int tenths, CancellationToken ct, bool failFast = false) => Do("ct", node, mireds, 0, tenths, ct, failFast);
 
-        async Task<bool> Do(string m, ulong node, int value, int sat, int tenths, CancellationToken ct)
+        async Task<bool> Do(string m, ulong node, int value, int sat, int tenths, CancellationToken ct, bool failFast)
         {
             ct.ThrowIfCancellationRequested();
-            Calls.Add(new Call(m, node, value, sat, tenths, _clock.Now));
-            double d = DelayMs(m);
+            var call = new Call(m, node, value, sat, tenths, _clock.Now, failFast);
+            Calls.Add(call);
+            double d = DelayMs(call);
             if (d > 0)
                 try { await _clock.Delay(d, ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) { Cancelled++; throw; }
-            return !Fails(node);
+            return !Fails(call);
         }
     }
 
@@ -161,7 +162,7 @@ namespace HyperTizen.Bulbs.Tests
         [Fact]
         public void OneBulbFailing_OtherKeepsSyncing()
         {
-            _t.Fails = n => n == 1;
+            _t.Fails = c => c.Node == 1;
             _sync.RunAsync(CancellationToken.None);
             for (int i = 0; i < 12; i++) { var c = i % 2 == 0 ? Red : new Rgb(0, 0, 255); _sync.SetFrame(c, c); _clock.Advance(500); }
 
@@ -176,7 +177,7 @@ namespace HyperTizen.Bulbs.Tests
         [Fact]
         public void StopDuringInFlightSend_EndsWarmWhite()
         {
-            _t.DelayMs = m => m == "hue" ? 500 : 0;
+            _t.DelayMs = c => c.Method == "hue" ? 500 : 0;
             _sync.SetFrame(Red, Red);
             var run = _sync.RunAsync(CancellationToken.None);
             _clock.Advance(250);                              // both colour calls in flight
@@ -203,8 +204,7 @@ namespace HyperTizen.Bulbs.Tests
             var run = _sync.RunAsync(CancellationToken.None);
             _clock.Advance(250);
             // node 1's first warm-white level command fails (an evicted session), everything else succeeds
-            _t.Fails = n => n == 1 && _t.Calls.Last() is { Method: "level", Value: 127 }
-                && Of(1, "level").Count(c => c.Value == 127) == 1;
+            _t.Fails = c => c is { Node: 1, Method: "level", Value: 127 } && Of(1, "level").Count(x => x.Value == 127) == 1;
 
             var stop = Stop();
             _clock.Advance(100);
@@ -326,6 +326,57 @@ namespace HyperTizen.Bulbs.Tests
                 Assert.Single(Of(n, "ct"));
                 AssertEndsWarmWhite(n);
             }
+        }
+
+        [Fact]
+        public void WarmWhite_SlowFailure_StillLands()
+        {
+            _sync.SetFrame(Red, Red);
+            var run = _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(2000);
+            int before = _t.Calls.Count;
+            // node 1's session died silently: the first warm-white level fails once the reduced MRP budget runs
+            // out (~0.6 s); the retry re-runs CASE (~3 s) plus the invoke and lands
+            bool First(Call c) => c is { Node: 1, Method: "level", Value: 127 } && Of(1, "level").Count(x => x.Value == 127) == 1;
+            _t.DelayMs = c => c is { Node: 1, Method: "level", Value: 127 } ? (First(c) ? 600 : 3100) : 0;
+            _t.Fails = First;
+
+            FakeClock.DetachContext();
+            var stop = _sync.StopToWarmWhiteAsync(TimeSpan.FromSeconds(4));
+            _clock.Advance(3800);
+            Assert.True(stop.IsCompletedSuccessfully);
+            Assert.Equal(2, Of(1, "level").Count(c => c.Value == 127));
+            AssertEndsWarmWhite(1);
+            AssertEndsWarmWhite(2);
+            Assert.All(_t.Calls.Skip(before), c => Assert.True(c.FailFast));    // warm white uses the short MRP budget
+            Assert.DoesNotContain(_t.Calls.Take(before), c => c.FailFast);       // sync commands don't
+            Assert.DoesNotContain(_log, l => l.Contains("warm white"));
+            Assert.True(run.IsCompletedSuccessfully);
+        }
+
+        [Fact]
+        public void Keepalive_ResendsLevel_AfterSilence()
+        {
+            _sync.SetFrame(new Rgb(200, 120, 40), new Rgb(30, 90, 220));
+            _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(5000);                                    // settled: nothing more to send
+            double last = _t.Calls.Max(c => c.At);
+            int n = _t.Calls.Count;
+            var levels = new[] { 1UL, 2UL }.ToDictionary(x => x, x => Of(x, "level").Last());
+
+            _clock.Advance(last + 31000 - _clock.Now);               // 31 s of a static frame
+            var extra = _t.Calls.Skip(n).ToList();
+            foreach (ulong node in levels.Keys)
+            {
+                var k = Assert.Single(extra, c => c.Node == node);
+                Assert.Equal(("level", levels[node].Value), (k.Method, k.Value));   // same level, no colour
+                double quiet = _t.Calls.Take(n).Where(c => c.Node == node).Max(c => c.At);
+                Assert.InRange(k.At, quiet + 30000, quiet + 30100);
+            }
+
+            n = _t.Calls.Count;
+            _clock.Advance(extra.Min(c => c.At) + 29000 - _clock.Now);
+            Assert.Equal(n, _t.Calls.Count);
         }
     }
 }

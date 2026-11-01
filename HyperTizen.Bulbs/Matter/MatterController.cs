@@ -86,15 +86,18 @@ namespace HyperTizen.Bulbs.Matter
         }
 
         public Task<bool> MoveToHueAndSaturation(ulong node, int hue, int sat, int tenths, CancellationToken ct) =>
-            Invoke(node, 0x0300, 0x06, ct, (ulong)hue, (ulong)sat, (ulong)tenths, 0UL, 0UL);
+            Invoke(node, 0x0300, 0x06, ct, Mrp.MaxTransmissions, (ulong)hue, (ulong)sat, (ulong)tenths, 0UL, 0UL);
 
-        public Task<bool> MoveToLevelWithOnOff(ulong node, int level, int tenths, CancellationToken ct) =>
-            Invoke(node, 0x0008, 0x04, ct, (ulong)level, (ulong)tenths, 0UL, 0UL);
+        public Task<bool> MoveToLevelWithOnOff(ulong node, int level, int tenths, CancellationToken ct, bool failFast = false) =>
+            Invoke(node, 0x0008, 0x04, ct, Budget(failFast), (ulong)level, (ulong)tenths, 0UL, 0UL);
 
-        public Task<bool> MoveToColorTemperature(ulong node, int mireds, int tenths, CancellationToken ct) =>
-            Invoke(node, 0x0300, 0x0a, ct, (ulong)mireds, (ulong)tenths, 0UL, 0UL);
+        public Task<bool> MoveToColorTemperature(ulong node, int mireds, int tenths, CancellationToken ct, bool failFast = false) =>
+            Invoke(node, 0x0300, 0x0a, ct, Budget(failFast), (ulong)mireds, (ulong)tenths, 0UL, 0UL);
 
-        private async Task<bool> Invoke(ulong nodeId, ulong cluster, ulong command, CancellationToken ct, params ulong[] fields)
+        private static int Budget(bool failFast) => failFast ? Mrp.FailFastTransmissions : Mrp.MaxTransmissions;
+
+        /// <param name="transmissions">MRP budget for the invoke itself; CASE always gets the full one</param>
+        private async Task<bool> Invoke(ulong nodeId, ulong cluster, ulong command, CancellationToken ct, int transmissions, params ulong[] fields)
         {
             if (!_nodes.TryGetValue(nodeId, out var node)) throw new ArgumentException("unknown node " + nodeId, nameof(nodeId));
             await node.Gate.WaitAsync(ct).ConfigureAwait(false);
@@ -104,7 +107,8 @@ namespace HyperTizen.Bulbs.Matter
                 if (node.Session == null) node.Session = await Connect(node, ct).ConfigureAwait(false);
                 if (node.Session == null) return false;
 
-                var resp = await Request(node.Session, NextExchange(), ProtoIm, OpInvokeRequest, InvokeRequest(cluster, command, fields), 0, ct).ConfigureAwait(false);
+                var resp = await Request(node.Session, NextExchange(), ProtoIm, OpInvokeRequest, InvokeRequest(cluster, command, fields), 0, ct,
+                    transmissions: transmissions).ConfigureAwait(false);
                 int status = resp == null ? -1 : InvokeStatus(resp);
                 if (status == 0) return true;
                 _log("matter: node " + nodeId + " invoke " + (resp == null ? "unconfirmed" : Describe(resp) + ", IM status " + status) + ", dropping session " + node.Session.LocalId);
@@ -183,7 +187,7 @@ namespace HyperTizen.Bulbs.Matter
         /// <param name="s">null for the unsecured session (CASE), with <paramref name="eph"/> our ephemeral node id</param>
         /// <param name="ackCounter">the peer message on this exchange this one acknowledges; copies of it are then ignored</param>
         private async Task<Msg> Request(SecureSession s, ushort exch, ushort proto, byte opcode, byte[] body, ulong eph, CancellationToken ct,
-            IPEndPoint ep = null, uint? ackCounter = null)
+            IPEndPoint ep = null, uint? ackCounter = null, int transmissions = Mrp.MaxTransmissions)
         {
             EnsureSocket();
             var p = new Pending { Routed = ackCounter };
@@ -202,7 +206,7 @@ namespace HyperTizen.Bulbs.Matter
                 ep = ep ?? s.Endpoint;
 
                 // retransmissions resend the identical datagram: same counter, so the peer sees a duplicate, not a new message
-                for (int n = 0; n < Mrp.MaxTransmissions && !p.Acked.Task.IsCompleted; n++)
+                for (int n = 0; n < transmissions && !p.Acked.Task.IsCompleted; n++)
                 {
                     await _send(d, ep).ConfigureAwait(false);
                     await Task.WhenAny(p.Acked.Task, Task.Delay(Mrp.Backoff(n, BaseInterval), ct)).ConfigureAwait(false);

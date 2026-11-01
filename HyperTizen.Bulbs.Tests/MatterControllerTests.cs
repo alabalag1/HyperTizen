@@ -189,6 +189,15 @@ namespace HyperTizen.Bulbs.Tests
         }
 
         [Fact]
+        public async Task Mrp_FailFast_GivesUpAfterTwo()
+        {
+            var b = new FakeBulb();
+            b.Drop = _ => true;
+            Assert.False(await b.C.MoveToLevelWithOnOff(1, 127, 10, CancellationToken.None, failFast: true));
+            Assert.Equal(2, b.Invokes.Count());
+        }
+
+        [Fact]
         public async Task SessionLost_NextInvokeReconnects()
         {
             var b = new FakeBulb();

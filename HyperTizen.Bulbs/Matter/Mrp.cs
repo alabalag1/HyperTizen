@@ -6,6 +6,10 @@ namespace HyperTizen.Bulbs.Matter
     internal static class Mrp
     {
         public const int MaxTransmissions = 5;
+
+        /// <summary>The fail-fast budget (warm white): gives up after ~0.7 s instead of ~3.4-4.2 s, leaving time
+        /// within the 4 s stop deadline to re-run CASE and retry.</summary>
+        public const int FailFastTransmissions = 2;
         public const double BackoffBase = 1.6, BackoffJitter = 0.25, BackoffMargin = 1.1;
         public const int BackoffThreshold = 1;
 
