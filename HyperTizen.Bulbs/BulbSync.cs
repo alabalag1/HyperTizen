@@ -15,6 +15,7 @@ namespace HyperTizen.Bulbs
     public sealed class BulbSync
     {
         const double TickMs = 20, CycleMinMs = 100;     // HyperHDR updateFrequency 50 Hz; bridge MAX_HZ 10
+        const double MaxBackoffMs = 5000;                // failing bulb: the cycle doubles from 100 ms up to this
         const int WarmLevel = 127, WarmMireds = 370, WarmTenths = 10;
         // Nothing confirmed for this long on a static scene: re-send the level, so a dead session (bulb reboot,
         // eviction) is found and re-established while running, not at power-off when warm white needs it.
@@ -218,9 +219,11 @@ namespace HyperTizen.Bulbs
                     if (!ok) { if (++failures % 20 == 1) _log($"node {node}: command failed ({failures})"); }
                     else failures = 0;
                 }
-                double wait = CycleMinMs - (_now() - t0);
+                // A fast-failing network (Wi-Fi down) would otherwise retry every 100 ms; reset on success.
+                double cycle = failures == 0 ? CycleMinMs : Math.Min(MaxBackoffMs, CycleMinMs * (1 << Math.Min(failures, 6)));
+                double wait = cycle - (_now() - t0);
                 if (wait > 0) await _delay(wait, ct).ConfigureAwait(false);
-                if (sent > 0) cycleMs += (_now() - t0 - cycleMs) * 0.3;
+                if (sent > 0 && failures == 0) cycleMs += (_now() - t0 - cycleMs) * 0.3;   // backoff isn't bulb speed
             }
         }
 

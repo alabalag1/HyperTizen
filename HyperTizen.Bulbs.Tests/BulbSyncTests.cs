@@ -168,8 +168,8 @@ namespace HyperTizen.Bulbs.Tests
 
             Assert.Contains(Of(2, "hue"), c => c.At > 5000);
             Assert.Contains(Of(2, "level"), c => c.At > 5000);
-            int failedCycles = Of(1, "level").Count();      // node 1 never confirms, so every cycle retries level
-            Assert.True(failedCycles > 40, $"{failedCycles}");
+            int failedCycles = Of(1, "level").Count();      // node 1 never confirms: it retries, backing off to 5 s
+            Assert.InRange(failedCycles, 3, 10);
             Assert.Equal((failedCycles + 19) / 20, _log.Count(l => l.Contains("node 1")));
             Assert.DoesNotContain(_log, l => l.Contains("node 2"));
         }
@@ -377,6 +377,32 @@ namespace HyperTizen.Bulbs.Tests
             n = _t.Calls.Count;
             _clock.Advance(extra.Min(c => c.At) + 29000 - _clock.Now);
             Assert.Equal(n, _t.Calls.Count);
+        }
+
+        [Fact]
+        public void Outage_BoundedCallsAndLogs()
+        {
+            _t.Fails = _ => true;                            // Wi-Fi down: every command fails at once
+            _sync.SetFrame(Red, Red);
+            _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(10000);
+            foreach (ulong n in new ulong[] { 1, 2 })
+                Assert.InRange(_t.Calls.Count(c => c.Node == n), 2, 15);
+            Assert.InRange(_log.Count, 1, 4);
+
+            _t.Fails = _ => false;                           // back up: sending resumes within the 5 s backoff cap
+            int from = _t.Calls.Count;
+            _clock.Advance(5100);
+            foreach (ulong n in new ulong[] { 1, 2 })
+            {
+                Assert.Contains(_t.Calls.Skip(from), c => c.Node == n && c.Method == "hue");
+                Assert.Contains(_t.Calls.Skip(from), c => c.Node == n && c.Method == "level");
+            }
+
+            from = _t.Calls.Count;                           // and the backoff is reset: a change goes out at once
+            _sync.SetFrame(new Rgb(0, 0, 255), new Rgb(0, 0, 255));
+            _clock.Advance(300);
+            Assert.Contains(_t.Calls.Skip(from), c => c.Node == 1 && c.Method == "hue");
         }
     }
 }

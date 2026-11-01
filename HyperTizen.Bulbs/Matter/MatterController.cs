@@ -24,6 +24,7 @@ namespace HyperTizen.Bulbs.Matter
             public BulbEntry Bulb;
             public readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
             public SecureSession Session;
+            public int Failures; // consecutive failed commands; guarded by Gate
         }
 
         private sealed class Msg
@@ -101,7 +102,7 @@ namespace HyperTizen.Bulbs.Matter
         {
             if (!_nodes.TryGetValue(nodeId, out var node)) throw new ArgumentException("unknown node " + nodeId, nameof(nodeId));
             await node.Gate.WaitAsync(ct).ConfigureAwait(false);
-            bool drop = false;
+            bool drop = false, ok = false, failed = true; // a cancelled call is neither: it says nothing about the bulb
             try
             {
                 if (node.Session == null) node.Session = await Connect(node, ct).ConfigureAwait(false);
@@ -110,22 +111,38 @@ namespace HyperTizen.Bulbs.Matter
                 var resp = await Request(node.Session, NextExchange(), ProtoIm, OpInvokeRequest, InvokeRequest(cluster, command, fields), 0, ct,
                     transmissions: transmissions).ConfigureAwait(false);
                 int status = resp == null ? -1 : InvokeStatus(resp);
-                if (status == 0) return true;
-                _log("matter: node " + nodeId + " invoke " + (resp == null ? "unconfirmed" : Describe(resp) + ", IM status " + status) + ", dropping session " + node.Session.LocalId);
+                if (status == 0) return ok = true;
+                Log(node, "invoke " + (resp == null ? "unconfirmed" : Describe(resp) + ", IM status " + status) + ", dropping session " + node.Session.LocalId);
                 drop = true;
                 return false;
             }
-            catch (Exception e) when (!(e is OperationCanceledException) && !_disposed)
+            catch (OperationCanceledException) { failed = false; throw; }
+            catch (Exception e) when (!_disposed)
             {
-                _log("matter: node " + nodeId + " invoke failed: " + e.GetType().Name);
+                // a missing interface or a socket error (network down) says what is wrong and holds nothing secret
+                Log(node, "invoke failed: " + (e is InvalidOperationException || e is SocketException ? e.Message : e.GetType().Name));
                 drop = true;
                 return false;
             }
             finally
             {
                 if (drop) Drop(node); // a cancelled call keeps its session: nothing says the session is broken
+                if (ok)
+                {
+                    if (node.Failures > 0) _log("matter: node " + nodeId + " recovered after " + node.Failures + " failed commands");
+                    node.Failures = 0;
+                }
+                else if (failed) node.Failures++;
                 node.Gate.Release();
             }
+        }
+
+        /// <summary>Per-node log, sampled while the node keeps failing: the first failing command logs in full, then
+        /// one in 20 (a fast-failing network would otherwise log every 100 ms). Call with the node's Gate held.</summary>
+        private void Log(Node node, string msg)
+        {
+            if (node.Failures % 20 != 0) return;
+            _log("matter: node " + node.Bulb.NodeId + " " + msg + (node.Failures > 0 ? " (" + node.Failures + " consecutive failures)" : ""));
         }
 
         private void Drop(Node node)
@@ -149,29 +166,29 @@ namespace HyperTizen.Bulbs.Matter
                 var cs = new CaseInitiator(_creds, node.Bulb.NodeId, localId);
                 ulong eph = BitConverter.ToUInt64(SessionCrypto.RandomBytes(8), 0) & 0xFFFFFFEFFFFFFFFF; // operational node id range
                 ushort exch = NextExchange();
-                _log("matter: node " + node.Bulb.NodeId + " CASE Sigma1 to " + ep + ", session " + localId);
+                Log(node, "CASE Sigma1 to " + ep + ", session " + localId);
                 var s2 = await Request(null, exch, ProtoSecureChannel, CaseInitiator.OpSigma1, cs.Sigma1(), eph, ct, ep).ConfigureAwait(false);
-                if (s2 == null) { _log("matter: node " + node.Bulb.NodeId + " no answer to Sigma1 at " + ep); continue; }
+                if (s2 == null) { Log(node, "no answer to Sigma1 at " + ep); continue; }
                 if (s2.Proto.Opcode != CaseInitiator.OpSigma2)
                 {
-                    _log("matter: node " + node.Bulb.NodeId + " Sigma1 rejected: " + Describe(s2));
+                    Log(node, "Sigma1 rejected: " + Describe(s2));
                     return null;
                 }
-                _log("matter: node " + node.Bulb.NodeId + " Sigma2 " + s2.Body.Length + " bytes");
+                Log(node, "Sigma2 " + s2.Body.Length + " bytes");
                 byte[] s3;
                 try { s3 = cs.Sigma3(s2.Body); }
-                catch (CaseException e) { _log("matter: node " + node.Bulb.NodeId + " bad Sigma2: " + e.Message); return null; }
+                catch (CaseException e) { Log(node, "bad Sigma2: " + e.Message); return null; }
 
                 // Sigma3 acks Sigma2 (as matter.js does), and that counter marks Sigma2 retransmits as duplicates
                 var st = await Request(null, exch, ProtoSecureChannel, CaseInitiator.OpSigma3, s3, eph, ct, ep, s2.Counter).ConfigureAwait(false);
                 if (st == null || st.Proto.Opcode != OpStatusReport || st.Body.Length < 8 || Bin.Get16(st.Body, 0) != 0 || Bin.Get16(st.Body, 6) != 0)
                 {
-                    _log("matter: node " + node.Bulb.NodeId + " Sigma3 not accepted: " + (st == null ? "no answer" : Describe(st)));
+                    Log(node, "Sigma3 not accepted: " + (st == null ? "no answer" : Describe(st)));
                     return null;
                 }
                 var s = cs.Finish(ep);
                 _sessions[s.LocalId] = s;
-                _log("matter: node " + node.Bulb.NodeId + " CASE up, session " + s.LocalId + " / peer " + s.PeerId);
+                Log(node, "CASE up, session " + s.LocalId + " / peer " + s.PeerId);
                 return s;
             }
             return null;

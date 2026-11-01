@@ -99,6 +99,8 @@ namespace HyperTizen.Bulbs.Tests
             public const ulong Node = 1;
             public readonly List<Sent> Received = new List<Sent>();
             public Func<Sent, bool> Drop = _ => false;
+            public bool Down; // the network is down: every send throws at once
+            public readonly List<string> Log = new List<string>();
             public MatterController C;
             public CaseResponder Case;
             public bool ResendSigma2BeforeStatus;
@@ -108,7 +110,7 @@ namespace HyperTizen.Bulbs.Tests
             public FakeBulb(CaseResponder caseResponder = null)
             {
                 Case = caseResponder;
-                C = new MatterController(Creds, Send, _ => { }) { BaseInterval = TimeSpan.FromMilliseconds(10), ResponseTimeout = TimeSpan.FromMilliseconds(200) };
+                C = new MatterController(Creds, Send, Log.Add) { BaseInterval = TimeSpan.FromMilliseconds(10), ResponseTimeout = TimeSpan.FromMilliseconds(200) };
                 if (Case == null)
                     C.InstallSession(Node, new SecureSession(CtrlSession, BulbSession, Node, I2R, R2I, new IPEndPoint(IPAddress.IPv6Loopback, 5540)));
             }
@@ -135,6 +137,7 @@ namespace HyperTizen.Bulbs.Tests
 
             private Task Send(byte[] d, IPEndPoint ep)
             {
+                if (Down) throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.NetworkUnreachable);
                 var s = new Sent();
                 byte[] plain = Bin.Get16(d, 1) == 0
                     ? MessageCodec.DecodeUnsecured(d, out s.Header)
@@ -195,6 +198,27 @@ namespace HyperTizen.Bulbs.Tests
             b.Drop = _ => true;
             Assert.False(await b.C.MoveToLevelWithOnOff(1, 127, 10, CancellationToken.None, failFast: true));
             Assert.Equal(2, b.Invokes.Count());
+        }
+
+        [Fact]
+        public async Task Outage_LogsSampled_RecoveryLogged()
+        {
+            var b = new FakeBulb(new CaseResponder()) { Down = true };
+            for (int i = 0; i < 40; i++) Assert.False(await b.C.MoveToLevelWithOnOff(1, 128, 0, CancellationToken.None));
+            Assert.InRange(b.Log.Count, 1, 6);
+            b.Down = false;
+            Assert.True(await b.C.MoveToLevelWithOnOff(1, 128, 0, CancellationToken.None));
+            Assert.Contains(b.Log, l => l.Contains("recovered"));
+        }
+
+        [Fact]
+        public async Task NoAnswerToSigma1_LogsSampled()
+        {
+            var b = new FakeBulb(new CaseResponder());
+            b.Drop = _ => true;                     // bulb unplugged, network up
+            b.C.BaseInterval = TimeSpan.FromMilliseconds(1);
+            for (int i = 0; i < 25; i++) Assert.False(await b.C.MoveToLevelWithOnOff(1, 128, 0, CancellationToken.None));
+            Assert.InRange(b.Log.Count, 1, 8);
         }
 
         [Fact]
