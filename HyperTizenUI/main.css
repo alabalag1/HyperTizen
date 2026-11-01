@@ -403,6 +403,39 @@ body {
     gap: 10px;
 }
 
+/* Bulb sync */
+.bulb-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 15px;
+    font-size: 22px;
+}
+
+.bulb-num {
+    width: 140px;
+    padding: 8px 12px;
+    font-size: 22px;
+    text-align: right;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.4);
+    border: 2px solid #4a4a6e;
+    border-radius: 8px;
+}
+
+.bulb-num:focus {
+    outline: none;
+    border-color: #4fc3f7;
+    box-shadow: 0 0 12px rgba(79, 195, 247, 0.8);
+}
+
+.bulb-hint {
+    color: #aaa;
+    font-size: 18px;
+    margin-bottom: 15px;
+}
+
 /* Logs Section */
 .logs-section {
     flex: 1;

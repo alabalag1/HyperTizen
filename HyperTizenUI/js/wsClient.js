@@ -70,6 +70,7 @@ function connectControlWS() {
             // Request initial configuration
             send({ Event: Events.ReadConfig, key: 'enabled' });
             send({ Event: Events.ReadConfig, key: 'rpcServer' });
+            readBulbConfig();
 
             // Trigger initial SSDP scan
             send({ Event: Events.ScanSSDP });
@@ -188,6 +189,13 @@ function handleControlMessage(data) {
 }
 
 function handleConfigResult(data) {
+    const bulb = BULB_FIELDS[data.key];
+    if (bulb) {
+        // A missing key (error) means the service is on its default.
+        setBulbField(bulb, data.error ? bulb.def : data.value);
+        return;
+    }
+
     if (data.error) {
         addLog('Warning', `Config read error for '${data.key}': ${data.value}`);
         return;
@@ -196,6 +204,8 @@ function handleConfigResult(data) {
     if (data.key === 'enabled') {
         const isEnabled = data.value === 'true' || data.value === true;
         updateCaptureState(isEnabled);
+        const sw = document.getElementById('bulbEnabled');
+        if (sw) sw.checked = isEnabled;
     } else if (data.key === 'rpcServer') {
         addLog('Info', `Current RPC server: ${data.value}`);
         updateStatus('serviceStatus', 'Running');
@@ -377,24 +387,71 @@ function applyDeviceSelection() {
 }
 
 // ============================================================================
+// Bulb sync controls
+// ============================================================================
+
+// Keys, ranges and defaults match the service (Tuning). dec = decimals shown/sent.
+const BULB_FIELDS = {
+    bulbGamma:    { id: 'bulbGamma',    min: 0.2, max: 5,    step: 0.1, def: 1,   dec: 1 },
+    bulbSmoothMs: { id: 'bulbSmoothMs', min: 0,   max: 5000, step: 50,  def: 300, dec: 0 },
+    bulbMinLevel: { id: 'bulbMinLevel', min: 1,   max: 254,  step: 1,   def: 5,   dec: 0 },
+    bulbBlack:    { id: 'bulbBlack',    min: 0,   max: 254,  step: 1,   def: 10,  dec: 0 }
+};
+
+function readBulbConfig() {
+    Object.keys(BULB_FIELDS).forEach(key => send({ Event: Events.ReadConfig, key: key }));
+}
+
+function setBulbField(f, value) {
+    const el = document.getElementById(f.id);
+    if (!el) return;
+    let n = parseFloat(value);
+    if (isNaN(n)) n = f.def;
+    el.value = n.toFixed(f.dec);
+}
+
+// Left/Right on a focused field: step, clamp, send, then re-read what the service stored.
+function bulbStep(el, dir) {
+    const key = el.dataset.key;
+    const f = BULB_FIELDS[key];
+    let n = parseFloat(el.value);
+    if (isNaN(n)) n = f.def;
+    n = Math.min(f.max, Math.max(f.min, n + dir * f.step));
+    el.value = n.toFixed(f.dec);
+    send({ Event: Events.SetConfig, key: key, value: el.value });
+    send({ Event: Events.ReadConfig, key: key });
+}
+
+function bulbReset() {
+    addLog('Info', 'Resetting bulb tuning to defaults');
+    send({ Event: Events.SetConfig, key: 'bulbReset', value: '1' });
+    readBulbConfig();
+}
+
+function bulbToggle(e) {
+    const on = e.target.checked;
+    addLog('Info', `Bulb sync ${on ? 'on' : 'off'}`);
+    send({ Event: Events.SetConfig, key: 'enabled', value: on ? 'true' : 'false' });
+    send({ Event: Events.ReadConfig, key: 'enabled' });
+}
+
+// ============================================================================
 // Service Control
 // ============================================================================
 
 function startCapture() {
-    if (selectedDevices.size === 0) {
-        addLog('Error', 'Please select a device before starting capture');
-        return;
-    }
-
+    // No device needed: the service drives the Matter bulbs directly.
     addLog('Info', 'Starting capture...');
     send({ Event: Events.SetConfig, key: 'enabled', value: 'true' });
     updateCaptureState(true);
+    send({ Event: Events.ReadConfig, key: 'enabled' });
 }
 
 function stopCapture() {
     addLog('Info', 'Stopping capture...');
     send({ Event: Events.SetConfig, key: 'enabled', value: 'false' });
     updateCaptureState(false);
+    send({ Event: Events.ReadConfig, key: 'enabled' });
 }
 
 function restartService() {
@@ -593,6 +650,8 @@ function setupButtonHandlers() {
     document.getElementById('btnRescan').onclick = rescanDevices;
     document.getElementById('btnApplyDevices').onclick = applyDeviceSelection;
     document.getElementById('btnClearLogs').onclick = clearLogs;
+    document.getElementById('bulbEnabled').onchange = bulbToggle;
+    document.getElementById('btnBulbReset').onclick = bulbReset;
 }
 
 // ============================================================================

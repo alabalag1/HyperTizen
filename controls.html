@@ -247,6 +247,24 @@
             cursor: not-allowed;
         }
 
+        .bulb-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .bulb-row input[type="number"] {
+            width: 90px;
+            padding: 6px 8px;
+            background: #1e1e2e;
+            color: #e0e0e0;
+            border: 1px solid #3e3e52;
+            border-radius: 6px;
+        }
+
         .status-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -502,6 +520,22 @@
             </div>
 
             <div class="control-section">
+                <h3>Bulb Sync</h3>
+                <label class="bulb-row"><input type="checkbox" id="bulbEnabled" onchange="bulbToggle(this)"> Bulb sync</label>
+                <label class="bulb-row">Dark-scene brightness (gamma)
+                    <input type="number" id="bulbGamma" data-key="bulbGamma" min="0.2" max="5" step="0.1" value="1.0" onchange="bulbSet(this)"></label>
+                <label class="bulb-row">Fade time (ms)
+                    <input type="number" id="bulbSmoothMs" data-key="bulbSmoothMs" min="0" max="5000" step="50" value="300" onchange="bulbSet(this)"></label>
+                <label class="bulb-row">Glow on black (1&ndash;254)
+                    <input type="number" id="bulbMinLevel" data-key="bulbMinLevel" min="1" max="254" step="1" value="5" onchange="bulbSet(this)"></label>
+                <label class="bulb-row">Black threshold (0&ndash;254)
+                    <input type="number" id="bulbBlack" data-key="bulbBlack" min="0" max="254" step="1" value="10" onchange="bulbSet(this)"></label>
+                <div class="control-buttons">
+                    <button class="btn-secondary" onclick="bulbReset()">Reset to defaults</button>
+                </div>
+            </div>
+
+            <div class="control-section">
                 <h3>Service Status</h3>
                 <div class="status-grid">
                     <div class="status-item">
@@ -657,6 +691,8 @@
                     // Request initial status
                     send({ Event: Events.GetStatus });
                     send({ Event: Events.ScanSSDP });
+                    send({ Event: Events.ReadConfig, key: 'enabled' });
+                    readBulbConfig();
                 };
 
                 controlWS.onmessage = (event) => {
@@ -768,6 +804,7 @@
                     break;
                 case Events.ReadConfigResult:
                     addLog('Info', `Config: ${data.key} = ${data.value}`);
+                    handleConfigResult(data);
                     break;
                 default:
                     console.log('Unknown event:', data);
@@ -862,6 +899,56 @@
                 selectedDevices.add(url);
                 item.classList.add('selected');
             }
+        }
+
+        // ============================================================================
+        // Bulb sync controls (keys, ranges, defaults match the service Tuning)
+        // ============================================================================
+
+        const BULB_FIELDS = {
+            bulbGamma:    { min: 0.2, max: 5,    def: 1,   dec: 1 },
+            bulbSmoothMs: { min: 0,   max: 5000, def: 300, dec: 0 },
+            bulbMinLevel: { min: 1,   max: 254,  def: 5,   dec: 0 },
+            bulbBlack:    { min: 0,   max: 254,  def: 10,  dec: 0 }
+        };
+
+        function readBulbConfig() {
+            Object.keys(BULB_FIELDS).forEach(key => send({ Event: Events.ReadConfig, key }));
+        }
+
+        function handleConfigResult(data) {
+            if (data.key === 'enabled' && !data.error) {
+                document.getElementById('bulbEnabled').checked = (data.value === 'true' || data.value === true);
+                return;
+            }
+            const f = BULB_FIELDS[data.key];
+            if (!f) return;
+            // Missing key (error) = the service is on its default.
+            let n = data.error ? f.def : parseFloat(data.value);
+            if (isNaN(n)) n = f.def;
+            document.getElementById(data.key).value = n.toFixed(f.dec);
+        }
+
+        // Send, then re-read: the service silently drops out-of-range values.
+        function bulbSet(el) {
+            const f = BULB_FIELDS[el.dataset.key];
+            let n = parseFloat(el.value);
+            if (isNaN(n)) n = f.def;
+            n = Math.min(f.max, Math.max(f.min, n));
+            el.value = n.toFixed(f.dec);
+            send({ Event: Events.SetConfig, key: el.dataset.key, value: el.value });
+            send({ Event: Events.ReadConfig, key: el.dataset.key });
+        }
+
+        function bulbToggle(el) {
+            send({ Event: Events.SetConfig, key: 'enabled', value: el.checked ? 'true' : 'false' });
+            send({ Event: Events.ReadConfig, key: 'enabled' });
+        }
+
+        function bulbReset() {
+            addLog('Info', 'Resetting bulb tuning to defaults');
+            send({ Event: Events.SetConfig, key: 'bulbReset', value: '1' });
+            readBulbConfig();
         }
 
         // ============================================================================

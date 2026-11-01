@@ -35,10 +35,10 @@
                     <h2>Service Control</h2>
                     <div class="control-buttons">
                         <button class="btn btn-start" id="btnStart" tabindex="1">
-                            ▶ Start Capture
+                            ▶ Start Bulb Sync
                         </button>
                         <button class="btn btn-stop" id="btnStop" tabindex="2">
-                            ⏹ Stop Capture
+                            ⏹ Stop Bulb Sync
                         </button>
                         <button class="btn btn-pause" id="btnPause" tabindex="3">
                             ⏸ Pause
@@ -76,6 +76,33 @@
                             <span id="errorCount" class="value">0</span>
                         </div>
                     </div>
+                </div>
+
+                <!-- Bulb Sync Section -->
+                <div class="section bulb-sync">
+                    <h2>Bulb sync</h2>
+                    <label class="checkbox-label bulb-row">
+                        <input type="checkbox" id="bulbEnabled">
+                        <span>Bulb sync</span>
+                    </label>
+                    <div class="bulb-row">
+                        <label for="bulbGamma">Dark-scene brightness (gamma)</label>
+                        <input type="number" class="bulb-num" id="bulbGamma" data-key="bulbGamma" min="0.2" max="5" step="0.1" value="1.0" readonly>
+                    </div>
+                    <div class="bulb-row">
+                        <label for="bulbSmoothMs">Fade time (ms)</label>
+                        <input type="number" class="bulb-num" id="bulbSmoothMs" data-key="bulbSmoothMs" min="0" max="5000" step="50" value="300" readonly>
+                    </div>
+                    <div class="bulb-row">
+                        <label for="bulbMinLevel">Glow on black (1&ndash;254)</label>
+                        <input type="number" class="bulb-num" id="bulbMinLevel" data-key="bulbMinLevel" min="1" max="254" step="1" value="5" readonly>
+                    </div>
+                    <div class="bulb-row">
+                        <label for="bulbBlack">Black threshold (0&ndash;254)</label>
+                        <input type="number" class="bulb-num" id="bulbBlack" data-key="bulbBlack" min="0" max="254" step="1" value="10" readonly>
+                    </div>
+                    <div class="bulb-hint">&larr; &rarr; change the value</div>
+                    <button class="btn btn-small" id="btnBulbReset">Reset to defaults</button>
                 </div>
 
                 <!-- SSDP Devices Section -->
@@ -192,7 +219,7 @@
             function updateFocusableElements() {
                 // Get all focusable elements in document order
                 focusableElements = Array.from(
-                    document.querySelectorAll('button:not([disabled]), input[type="checkbox"], .device-item')
+                    document.querySelectorAll('button:not([disabled]), input[type="checkbox"], .bulb-num, .device-item')
                 );
 
                 // If current element is no longer focusable, reset index
@@ -298,14 +325,21 @@
 
                     case 'ArrowLeft':
                     case 37: // Left arrow keyCode
-                        // Only prevent default if we're using it for navigation
-                        // Otherwise let it bubble for potential system use
+                        // On a bulb field, Left/Right step the value; elsewhere let it bubble
+                        if (activeElement.classList.contains('bulb-num')) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            bulbStep(activeElement, -1);
+                        }
                         break;
 
                     case 'ArrowRight':
                     case 39: // Right arrow keyCode
-                        // Only prevent default if we're using it for navigation
-                        // Otherwise let it bubble for potential system use
+                        if (activeElement.classList.contains('bulb-num')) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            bulbStep(activeElement, 1);
+                        }
                         break;
 
                     case 'Enter':
