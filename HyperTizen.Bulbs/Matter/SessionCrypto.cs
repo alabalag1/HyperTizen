@@ -6,6 +6,7 @@ using Org.BouncyCastle.Crypto.Macs;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
 using Org.BouncyCastle.Math;
+using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 
 namespace HyperTizen.Bulbs.Matter
@@ -23,6 +24,25 @@ namespace HyperTizen.Bulbs.Matter
             var okm = new byte[len];
             g.GenerateBytes(okm, 0, len);
             return okm;
+        }
+
+        public static readonly SecureRandom Random = new SecureRandom();
+
+        /// <summary>A fresh P-256 key pair: 32-byte private scalar, 65-byte uncompressed public point.</summary>
+        public static (byte[] Priv, byte[] Pub) GenerateP256()
+        {
+            var g = new ECKeyPairGenerator();
+            g.Init(new ECKeyGenerationParameters(P256, Random));
+            var kp = g.GenerateKeyPair();
+            return (BigIntegers.AsUnsignedByteArray(32, ((ECPrivateKeyParameters)kp.Private).D),
+                ((ECPublicKeyParameters)kp.Public).Q.GetEncoded(false));
+        }
+
+        public static byte[] RandomBytes(int n)
+        {
+            var b = new byte[n];
+            Random.NextBytes(b);
+            return b;
         }
 
         public static byte[] EcdhP256(byte[] priv, byte[] peerPub)

@@ -93,7 +93,43 @@ namespace HyperTizen.Bulbs.Matter
         /// <exception cref="Org.BouncyCastle.Crypto.InvalidCipherTextException">MIC check failed</exception>
         public static byte[] DecodeSecured(byte[] datagram, byte[] key, ulong sourceNodeId, out MessageHeader header)
         {
-            if (datagram.Length < 8 + MicLength) throw new FormatException("message too short");
+            int p = DecodeHeader(datagram, out header);
+            if (datagram.Length < p + MicLength) throw new FormatException("message too short");
+            var aad = new byte[p];
+            Buffer.BlockCopy(datagram, 0, aad, 0, p);
+            var ct = new byte[datagram.Length - p];
+            Buffer.BlockCopy(datagram, p, ct, 0, ct.Length);
+            return Ccm(false, key, Nonce(header.SecurityFlags, header.Counter, sourceNodeId), aad, ct);
+        }
+
+        /// <summary>Unsecured unicast message (session id 0, used by CASE). The initiator must send its ephemeral node id
+        /// as the source; the responder answers with it as the destination.</summary>
+        public static byte[] EncodeUnsecured(uint counter, byte[] payloadHeaderAndBody, ulong? sourceNodeId, ulong? destNodeId)
+        {
+            int n = 8 + (sourceNodeId.HasValue ? 8 : 0) + (destNodeId.HasValue ? 8 : 0);
+            var d = new byte[n + payloadHeaderAndBody.Length];
+            d[0] = (byte)((sourceNodeId.HasValue ? FlagSourceNode : 0) | (destNodeId.HasValue ? 1 : 0));
+            Bin.Put32(d, 4, counter);
+            int p = 8;
+            if (sourceNodeId.HasValue) { Bin.Put64(d, p, sourceNodeId.Value); p += 8; }
+            if (destNodeId.HasValue) { Bin.Put64(d, p, destNodeId.Value); p += 8; }
+            Buffer.BlockCopy(payloadHeaderAndBody, 0, d, p, payloadHeaderAndBody.Length);
+            return d;
+        }
+
+        public static byte[] DecodeUnsecured(byte[] datagram, out MessageHeader header)
+        {
+            int p = DecodeHeader(datagram, out header);
+            if (header.SessionId != 0) throw new FormatException("not an unsecured message");
+            var r = new byte[datagram.Length - p];
+            Buffer.BlockCopy(datagram, p, r, 0, r.Length);
+            return r;
+        }
+
+        /// <returns>the length of the message header (the AAD of a secured message)</returns>
+        private static int DecodeHeader(byte[] datagram, out MessageHeader header)
+        {
+            if (datagram.Length < 8) throw new FormatException("message too short");
             byte flags = datagram[0];
             if (flags >> 4 != 0) throw new NotSupportedException("message version " + (flags >> 4));
             header = new MessageHeader
@@ -107,6 +143,8 @@ namespace HyperTizen.Bulbs.Matter
             if ((header.SecurityFlags & SessionTypeMask) != 0) throw new NotSupportedException("group session");
 
             int p = 8;
+            int need = p + ((flags & FlagSourceNode) != 0 ? 8 : 0) + ((flags & DsizMask) == 1 ? 8 : (flags & DsizMask) == 2 ? 2 : 0);
+            if (datagram.Length < need) throw new FormatException("message too short");
             if ((flags & FlagSourceNode) != 0) { header.SourceNodeId = Bin.Get64(datagram, p); p += 8; }
             switch (flags & DsizMask)
             {
@@ -114,13 +152,7 @@ namespace HyperTizen.Bulbs.Matter
                 case 2: header.DestGroupId = Bin.Get16(datagram, p); p += 2; break;
                 case 3: throw new FormatException("reserved DSIZ");
             }
-            if (datagram.Length < p + MicLength) throw new FormatException("message too short");
-
-            var aad = new byte[p];
-            Buffer.BlockCopy(datagram, 0, aad, 0, p);
-            var ct = new byte[datagram.Length - p];
-            Buffer.BlockCopy(datagram, p, ct, 0, ct.Length);
-            return Ccm(false, key, Nonce(header.SecurityFlags, header.Counter, sourceNodeId), aad, ct);
+            return p;
         }
 
         /// <summary>Core spec §4.8.1: security flags || message counter (LE) || source node id (LE), 13 bytes.</summary>
@@ -133,7 +165,8 @@ namespace HyperTizen.Bulbs.Matter
             return n;
         }
 
-        private static byte[] Ccm(bool encrypt, byte[] key, byte[] nonce, byte[] aad, byte[] data)
+        /// <summary>AES-128-CCM, 16-byte MIC. Also used bare for the CASE Sigma2/Sigma3 encrypted payloads.</summary>
+        internal static byte[] Ccm(bool encrypt, byte[] key, byte[] nonce, byte[] aad, byte[] data)
         {
             var c = new CcmBlockCipher(new AesEngine());
             c.Init(encrypt, new AeadParameters(new KeyParameter(key), MicLength * 8, nonce, aad));
