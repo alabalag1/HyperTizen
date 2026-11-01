@@ -113,12 +113,31 @@ namespace HyperTizen
         private Task _stopping = Task.CompletedTask;
         private int _badFrames = 0;
 
+        // Stop/Start invariant (HyperionClient has no tests, so it is spelled out here). Anti-goal: never
+        // capture or drive the bulbs with the TV off.
+        // - Stop() bumps _stopGen in the same _stateLock block that chains _stopping.
+        // - Start snapshots (_stopping, _stopGen) together, waits for that stop, and gives up if the generation
+        //   moved: a later Stop arrived (e.g. an Off-Normal-Off burst), so the TV is off again.
+        // - Start re-checks the generation under _stateLock where it commits: taking _isRunning, and starting
+        //   BulbSync. A concurrent Stop therefore either finds BulbSync running (its warm white and cancel work),
+        //   or bumps the generation first and Start bails out before driving anything (a Stop that lands during
+        //   the long init finds no CTS to cancel). The capture loop also exits as soon as the generation moves.
+        private int _stopGen;
+
         public async Task Start()
         {
             // A wake during a stop: let the stop finish first, so this Start isn't refused as "already running"
             Task stopping;
-            lock (_stateLock) stopping = _stopping;
-            await stopping;
+            int gen;
+            lock (_stateLock) { stopping = _stopping; gen = _stopGen; }
+            try
+            {
+                await stopping;
+            }
+            catch (Exception ex) // a failed stop must not block every later Start
+            {
+                Helper.Log.Write(Helper.eLogType.Warning, $"Previous stop failed: {ex.Message}");
+            }
 
             // Only SetConfig "enabled" changes what the user wants; every Start caller goes through this gate.
             if (!App.Configuration.Enabled)
@@ -130,6 +149,11 @@ namespace HyperTizen
             // Prevent multiple simultaneous starts (outside the try, so the finally doesn't clear the running loop's flag)
             lock (_stateLock)
             {
+                if (gen != _stopGen)
+                {
+                    Helper.Log.Write(Helper.eLogType.Info, "A newer stop arrived, not starting");
+                    return;
+                }
                 if (_isRunning)
                 {
                     Helper.Log.Write(Helper.eLogType.Warning, "HyperionClient already running");
@@ -405,12 +429,23 @@ namespace HyperTizen
                 const int maxConsecutiveErrors = 10;
 
                 // Bulbs run with the capture loop, on this run's token (never a long-lived one: BulbSync links to it).
-                // Stop() fades them to warm white first; the finally below only cancels (any other loop exit).
-                runCts = _cancellationTokenSource;
-                if (App.Bulbs != null) bulbRun = App.Bulbs.RunAsync(runCts.Token);
+                // Stop() fades them to warm white first; on any other loop exit the finally below does.
+                // Atomic with Stop's generation bump (see the invariant above _stopGen).
+                lock (_stateLock)
+                {
+                    if (gen != _stopGen)
+                    {
+                        // a newer stop may already have disposed and nulled _cancellationTokenSource
+                        Helper.Log.Write(Helper.eLogType.Info, "Stopped during startup, not starting capture");
+                        _serviceState = ServiceState.Idle;
+                        return;
+                    }
+                    runCts = _cancellationTokenSource;
+                    if (App.Bulbs != null) bulbRun = App.Bulbs.RunAsync(runCts.Token);
+                }
 
-                // STEP 10: Continue until stopped
-                while (!_cancellationTokenSource.Token.IsCancellationRequested)
+                // STEP 10: Continue until stopped (the generation check first: a newer stop may null the CTS)
+                while (gen == Volatile.Read(ref _stopGen) && !_cancellationTokenSource.Token.IsCancellationRequested)
                 {
                     try
                     {
@@ -575,7 +610,10 @@ namespace HyperTizen
         public Task Stop()
         {
             lock (_stateLock)
+            {
+                _stopGen++;
                 return _stopping = _stopping.ContinueWith(_ => StopInner(), TaskScheduler.Default).Unwrap();
+            }
         }
 
         private async Task StopInner()
