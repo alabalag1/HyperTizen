@@ -238,6 +238,31 @@ namespace HyperTizen.Bulbs.Tests
         }
 
         [Fact]
+        public void Restart_WithoutNewFrame_SendsNothing()
+        {
+            _sync.SetFrame(Red, Red);
+            _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(2000);
+            Assert.True(Stop().IsCompletedSuccessfully);
+            int n = _t.Calls.Count;
+
+            _sync.RunAsync(CancellationToken.None);    // the pre-stop frame must not come back
+            _clock.Advance(2000);
+            Assert.Equal(n, _t.Calls.Count);
+            Assert.True(Stop().IsCompletedSuccessfully);
+            Assert.Equal(n, _t.Calls.Count);           // nothing driven this run, so no warm white either
+        }
+
+        [Fact]
+        public void Stop_NoFrameThisRun_SendsNothing()
+        {
+            _sync.RunAsync(CancellationToken.None);
+            _clock.Advance(1000);
+            Assert.True(Stop().IsCompletedSuccessfully);
+            Assert.Empty(_t.Calls);
+        }
+
+        [Fact]
         public void Restart_RefusedWhileStopping_WorksAfter()
         {
             _sync.SetFrame(Red, Red);

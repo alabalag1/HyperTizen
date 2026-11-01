@@ -25,7 +25,7 @@ namespace HyperTizen.Bulbs
         readonly Func<double, CancellationToken, Task> _delay;
 
         readonly object _frameLock = new object();
-        readonly HybridSmoother _smoother = new HybridSmoother();
+        HybridSmoother _smoother = new HybridSmoother();
         bool _hasFrame, _hasOutput;
         Rgb _lower, _upper;                              // latest 8-bit output, guarded by _frameLock
 
@@ -33,6 +33,7 @@ namespace HyperTizen.Bulbs
         volatile bool _running;
         CancellationTokenSource _sendCts;
         Task _loops, _stopTask;
+        readonly HashSet<ulong> _driven = new HashSet<ulong>();   // nodes sent a command this run; lock on itself
 
         /// <param name="nowMs">Clock in ms; defaults to a Stopwatch.</param>
         /// <param name="delay">Delay in ms; defaults to Task.Delay.</param>
@@ -65,6 +66,7 @@ namespace HyperTizen.Bulbs
                 if (_stopTask != null && !_stopTask.IsCompleted) throw new InvalidOperationException("BulbSync stop in progress");
                 _running = true;
                 _stopTask = null;
+                lock (_driven) _driven.Clear();
                 // ponytail: the linked CTS is never disposed (Stop may still cancel it); one small leak per run.
                 _sendCts = cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 _loops = Task.WhenAll(new[] { TickLoop(cts.Token) }.Concat(_bulbs.Select(b => BulbLoop(b, cts.Token))));
@@ -76,10 +78,17 @@ namespace HyperTizen.Bulbs
         {
             try { await _loops.ConfigureAwait(false); }
             catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
-            finally { _running = false; }
+            finally
+            {
+                // Forget this run's frame, so the next run can't replay a scene from before the stop.
+                // Reset here rather than in RunAsync: a SetFrame made before RunAsync is fresh and must count.
+                lock (_frameLock) { _smoother = new HybridSmoother(); _hasFrame = _hasOutput = false; }
+                _running = false;
+            }
         }
 
-        /// <summary>No-op unless running. Cancels in-flight sends, then fades every bulb to warm white.
+        /// <summary>No-op unless running. Cancels in-flight sends, then fades to warm white every bulb that was
+        /// sent a command this run (sync never switches on a bulb it didn't drive).
         /// A second call while one is in progress gets the same task.</summary>
         public Task StopToWarmWhiteAsync(TimeSpan deadline)
         {
@@ -101,7 +110,9 @@ namespace HyperTizen.Bulbs
                 // wait for the loops, so a colour from a loop mid-iteration can't land after the warm white
                 if (await Task.WhenAny(_loops, expired).ConfigureAwait(false) == expired)
                     _log("bulbs: send loops did not stop before the deadline");
-                var all = Task.WhenAll(_bulbs.Select(b => WarmWhite(b.NodeId, dl.Token)));
+                ulong[] driven;
+                lock (_driven) driven = _driven.ToArray();
+                var all = Task.WhenAll(driven.Select(n => WarmWhite(n, dl.Token)));
                 if (await Task.WhenAny(all, expired).ConfigureAwait(false) == expired)
                     _log("bulbs: warm white did not finish before the deadline");
             }
@@ -175,7 +186,7 @@ namespace HyperTizen.Bulbs
                     bool ok = true;
                     if (BulbMapper.ColourChanged(colour, next))
                     {
-                        if (await Send(() => _transport.MoveToHueAndSaturation(node, Clamp(next.Hue.Value, 0, 254),
+                        if (await Send(node, () => _transport.MoveToHueAndSaturation(node, Clamp(next.Hue.Value, 0, 254),
                                 Clamp(next.Sat.Value, 0, 254), Clamp(fade, 0, 65534), ct), ct).ConfigureAwait(false))
                             colour = next;
                         else ok = false;
@@ -185,7 +196,7 @@ namespace HyperTizen.Bulbs
                     // so the floor itself is always sent.
                     if (BulbMapper.LevelChanged(level, next.Level) || (next.Level == tuning.MinLevel && level != next.Level))
                     {
-                        if (await Send(() => _transport.MoveToLevelWithOnOff(node, Clamp(next.Level, 1, 254),
+                        if (await Send(node, () => _transport.MoveToLevelWithOnOff(node, Clamp(next.Level, 1, 254),
                                 Clamp(fade, 0, 65534), ct), ct).ConfigureAwait(false))
                             level = next.Level;
                         else ok = false;
@@ -202,8 +213,9 @@ namespace HyperTizen.Bulbs
         }
 
         /// <summary>A throwing transport counts as a failed command; cancellation propagates.</summary>
-        static async Task<bool> Send(Func<Task<bool>> call, CancellationToken ct)
+        async Task<bool> Send(ulong node, Func<Task<bool>> call, CancellationToken ct)
         {
+            lock (_driven) _driven.Add(node);   // an attempt counts: an in-flight command may still land
             try { return await call().ConfigureAwait(false); }
             catch (Exception) when (!ct.IsCancellationRequested) { return false; }
         }
