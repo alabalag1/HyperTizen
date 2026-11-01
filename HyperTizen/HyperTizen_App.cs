@@ -60,6 +60,8 @@ namespace HyperTizen
             System.Threading.Thread.Sleep(10000);
             Helper.Log.Write(Helper.eLogType.Info, "Network stack ready - continuing startup");
 
+            Probe.Run(); // TEMP spike, removed in Task 1 step 6
+
             // STEP 5: Run diagnostics (ONLY if not in diagnostic mode)
             if (!Globals.Instance.DiagnosticMode)
             {
