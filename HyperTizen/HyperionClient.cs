@@ -19,6 +19,7 @@ using Tizen.Messaging.Messages;
 using System.Linq.Expressions;
 using Tizen.Applications.Notifications;
 using HyperTizen.Capture;
+using HyperTizen.Bulbs;
 
 namespace HyperTizen
 {
@@ -101,27 +102,40 @@ namespace HyperTizen
             }
         }
 
+        // True while Start() runs (the capture loop is alive); Stop() waits for it to drop.
+        public bool IsRunning => _isRunning;
+
         public async Task Start()
         {
-            try
+            // Only SetConfig "enabled" changes what the user wants; every Start caller goes through this gate.
+            if (!App.Configuration.Enabled)
             {
-                // Prevent multiple simultaneous starts
+                Helper.Log.Write(Helper.eLogType.Info, "Sync disabled in settings, not starting");
+                return;
+            }
+
+            // Prevent multiple simultaneous starts (outside the try, so the finally doesn't clear the running loop's flag)
+            lock (_stateLock)
+            {
                 if (_isRunning)
                 {
                     Helper.Log.Write(Helper.eLogType.Warning, "HyperionClient already running");
                     return;
                 }
+                _isRunning = true;
+            }
 
+            CancellationTokenSource runCts = null;
+            Task bulbRun = Task.CompletedTask;
+            try
+            {
                 // STEP 1: Early initialization for logging
                 Helper.Log.Write(Helper.eLogType.Info, "=== STEP 1: Service startup ===");
                 State = ServiceState.Starting;
-                _isRunning = true;
                 _startTime = DateTime.Now;
 
-                // STEP 2: Initialize WebSocket logging/control FIRST
-                // This ensures logs are available even in filestealer mode
-                Helper.Log.Write(Helper.eLogType.Info, "=== STEP 2: WebSocket + Config initialization ===");
-                Globals.Instance.SetConfig();
+                // STEP 2: WebSocket logging/control is started in App.OnCreate
+                Helper.Log.Write(Helper.eLogType.Info, "=== STEP 2: WebSocket initialization ===");
                 Helper.Log.Write(Helper.eLogType.Info, "WebSocket server should be running on port 45678");
                 Helper.Log.Write(Helper.eLogType.Info, $"Connect to http://<TV_IP>:45678 to view logs");
 
@@ -202,7 +216,6 @@ namespace HyperTizen
                     Helper.Log.Write(Helper.eLogType.Info, "");
 
                     // Exit the application
-                    Globals.Instance.Enabled = false;
                     return;
                 }
 
@@ -216,25 +229,8 @@ namespace HyperTizen
 
                 Helper.Log.Write(Helper.eLogType.Info, "HyperionClient starting normal capture mode...");
 
-                // STEP 3: SSDP scans (already done in SetConfig above)
-                Helper.Log.Write(Helper.eLogType.Info, "=== STEP 3: SSDP scan complete ===");
-
-                // Log the discovered configuration
-                Helper.Log.Write(Helper.eLogType.Info,
-                    $"Config: {Globals.Instance.ServerIp ?? "null"}:{Globals.Instance.ServerPort}");
-
-                // In diagnostic mode, skip config validation to allow initialization
-                if (!Globals.Instance.DiagnosticMode)
-                {
-                    // Validate configuration before starting loop
-                    if (string.IsNullOrEmpty(Globals.Instance.ServerIp) || Globals.Instance.ServerPort <= 0)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Error,
-                            "STARTUP FAILED: Invalid config from SSDP");
-                        return;
-                    }
-                }
-                else
+                // STEP 3: no HyperHDR discovery: frames go straight to the bulbs (App.Bulbs)
+                if (Globals.Instance.DiagnosticMode)
                 {
                     Helper.Log.Write(Helper.eLogType.Warning,
                         "DIAGNOSTIC MODE ACTIVE - Will pause after initialization");
@@ -266,15 +262,6 @@ namespace HyperTizen
                         {
                             Helper.Log.Write(Helper.eLogType.Info,
                                 $"CAPTURE METHOD SELECTED: {_selectedCaptureMethod.Name}");
-
-                            // Automatically enable capturing now that we have a working method
-                            // This ensures the capture loop will run even if preferences have Enabled=false
-                            if (!Globals.Instance.Enabled)
-                            {
-                                Helper.Log.Write(Helper.eLogType.Info,
-                                    "Auto-enabling capture (was disabled in preferences)");
-                                Globals.Instance.Enabled = true;
-                            }
                         }
                     }
                     catch (Exception ex)
@@ -394,7 +381,6 @@ namespace HyperTizen
 
                     Helper.Log.Write(Helper.eLogType.Warning,
                         "DIAGNOSTIC MODE: 10 minutes elapsed. Exiting gracefully.");
-                    Globals.Instance.Enabled = false;
                     return;
                 }
 
@@ -405,8 +391,13 @@ namespace HyperTizen
                 int consecutiveErrors = 0;
                 const int maxConsecutiveErrors = 10;
 
+                // Bulbs run with the capture loop, on this run's token (never a long-lived one: BulbSync links to it).
+                // Stop() fades them to warm white first; the finally below only cancels (any other loop exit).
+                runCts = _cancellationTokenSource;
+                if (App.Bulbs != null) bulbRun = App.Bulbs.RunAsync(runCts.Token);
+
                 // STEP 10: Continue until stopped
-                while (!_cancellationTokenSource.Token.IsCancellationRequested && Globals.Instance.Enabled)
+                while (!_cancellationTokenSource.Token.IsCancellationRequested)
                 {
                     try
                     {
@@ -432,128 +423,62 @@ namespace HyperTizen
                             }
                         }
 
-                        // THREAD-SAFE NULL CHECKS: Capture client reference to prevent race conditions
-                        var clientSnapshot = Networking.client;
-                        bool isConnected = false;
-
-                        try
+                        // Validate capture method is available
+                        if (_selectedCaptureMethod == null)
                         {
-                            // Safe connection check with null guards
-                            isConnected = clientSnapshot != null &&
-                                         clientSnapshot.Client != null &&
-                                         clientSnapshot.Client.Connected;
-                        }
-                        catch (NullReferenceException)
-                        {
-                            Helper.Log.Write(Helper.eLogType.Warning, "Connection check: Client became null during check");
-                            isConnected = false;
-                        }
-                        catch (ObjectDisposedException)
-                        {
-                            Helper.Log.Write(Helper.eLogType.Warning, "Connection check: Client was disposed");
-                            isConnected = false;
+                            Helper.Log.Write(Helper.eLogType.Error,
+                                "Cannot capture: No capture method selected!");
+                            await Task.Delay(2000, _cancellationTokenSource.Token);
+                            continue;
                         }
 
-                        if(isConnected)
+                        var watchFPS = System.Diagnostics.Stopwatch.StartNew();
+
+                        // Capture using selected method
+                        CaptureResult captureResult = null;
+                        await Task.Run(() =>
                         {
-                            // Validate capture method is available
-                            if (_selectedCaptureMethod == null)
+                            captureResult = _selectedCaptureMethod.Capture(
+                                Globals.Instance.Width,
+                                Globals.Instance.Height);
+                        });
+
+                        watchFPS.Stop();
+
+                        // Process capture result
+                        if (captureResult != null && captureResult.Success)
+                        {
+                            var elapsedFPS = 1 / watchFPS.Elapsed.TotalSeconds;
+
+                            // STEP 9: feed the frame to the bulbs. Not once their run has ended (Stop's warm-white
+                            // window): a frame set then would be replayed at the start of the next run.
+                            if (App.Bulbs?.IsRunning == true)
                             {
-                                Helper.Log.Write(Helper.eLogType.Error,
-                                    "Cannot capture: No capture method selected!");
-                                await Task.Delay(2000, _cancellationTokenSource.Token);
-                                continue;
+                                var (lower, upper) = ColourChain.LeftZones(captureResult.YData, captureResult.UVData, captureResult.Width, captureResult.Height);
+                                App.Bulbs.SetFrame(lower, upper);
                             }
 
-                            var watchFPS = System.Diagnostics.Stopwatch.StartNew();
-
-                            // Capture using selected method
-                            CaptureResult captureResult = null;
-                            await Task.Run(() =>
+                            // Update statistics
+                            _framesCaptured++;
+                            _fpsHistory.Add(elapsedFPS);
+                            if (_fpsHistory.Count > 100) // Keep last 100 samples
                             {
-                                captureResult = _selectedCaptureMethod.Capture(
-                                    Globals.Instance.Width,
-                                    Globals.Instance.Height);
-                            });
-
-                            watchFPS.Stop();
-
-                            // Process capture result
-                            if (captureResult != null && captureResult.Success)
-                            {
-                                var elapsedFPS = 1 / watchFPS.Elapsed.TotalSeconds;
-
-                                // STEP 9: Initiate FlatBuffers connection (send frame)
-                                try
-                                {
-                                    _ = Networking.SendImageAsync(
-                                        captureResult.YData,
-                                        captureResult.UVData,
-                                        captureResult.Width,
-                                        captureResult.Height);
-                                }
-                                catch (NullReferenceException ex)
-                                {
-                                    Helper.Log.Write(Helper.eLogType.Error,
-                                        $"Capture loop: NullRef in SendImageAsync: {ex.Message}");
-                                    throw; // Re-throw to be caught by outer catch
-                                }
-                                catch (Exception ex)
-                                {
-                                    Helper.Log.Write(Helper.eLogType.Error,
-                                        $"Capture loop: Error in SendImageAsync: {ex.GetType().Name}: {ex.Message}");
-                                    throw;
-                                }
-
-                                // Update statistics
-                                _framesCaptured++;
-                                _fpsHistory.Add(elapsedFPS);
-                                if (_fpsHistory.Count > 100) // Keep last 100 samples
-                                {
-                                    _fpsHistory.RemoveAt(0);
-                                }
-
-                                // Reset error counter on success
-                                consecutiveErrors = 0;
+                                _fpsHistory.RemoveAt(0);
                             }
-                            else
-                            {
-                                // Capture failed
-                                string errorMsg = captureResult?.ErrorMessage ?? "Unknown capture error";
-                                Helper.Log.Write(Helper.eLogType.Warning,
-                                    $"Capture failed: {errorMsg}");
-                                consecutiveErrors++;
 
-                                // Brief delay before retry
-                                await Task.Delay(500, _cancellationTokenSource.Token);
-                            }
+                            // Reset error counter on success
+                            consecutiveErrors = 0;
                         }
                         else
                         {
-                            Helper.Log.Write(Helper.eLogType.Info, "Not connected, registering...");
-                            await Task.Run(() => Networking.SendRegister());
+                            // Capture failed
+                            string errorMsg = captureResult?.ErrorMessage ?? "Unknown capture error";
+                            Helper.Log.Write(Helper.eLogType.Warning,
+                                $"Capture failed: {errorMsg}");
+                            consecutiveErrors++;
 
-                            // Add delay between retry attempts to prevent tight loop
-                            // Re-check connection status after registration attempt
-                            var newClientSnapshot = Networking.client;
-                            bool stillDisconnected = true;
-
-                            try
-                            {
-                                stillDisconnected = newClientSnapshot == null ||
-                                                   newClientSnapshot.Client == null ||
-                                                   !newClientSnapshot.Client.Connected;
-                            }
-                            catch (Exception)
-                            {
-                                stillDisconnected = true;
-                            }
-
-                            if (stillDisconnected)
-                            {
-                                Helper.Log.Write(Helper.eLogType.Warning, "Register failed, retry in 2s");
-                                await Task.Delay(2000, _cancellationTokenSource.Token);
-                            }
+                            // Brief delay before retry
+                            await Task.Delay(500, _cancellationTokenSource.Token);
                         }
                     }
                     catch (OperationCanceledException)
@@ -574,7 +499,6 @@ namespace HyperTizen
                             Helper.Log.Write(Helper.eLogType.Error,
                                 $"TOO MANY ERRORS ({consecutiveErrors}). Stopping capture to prevent crash.");
                             State = ServiceState.Error;
-                            Globals.Instance.Enabled = false;
                             break;
                         }
 
@@ -604,6 +528,17 @@ namespace HyperTizen
             }
             finally
             {
+                // Any loop exit ends the bulb run. No warm white here (only Stop() sends it), so after
+                // too many capture errors the bulbs keep their last colour.
+                try
+                {
+                    runCts?.Cancel();
+                    await bulbRun;
+                }
+                catch (Exception ex)
+                {
+                    Helper.Log.Write(Helper.eLogType.Warning, $"Error ending bulb sync: {ex.Message}");
+                }
                 _isRunning = false;
                 Helper.Log.Write(Helper.eLogType.Info, "HyperionClient Start() method completed");
             }
@@ -612,10 +547,22 @@ namespace HyperTizen
         public async Task Stop()
         {
             Helper.Log.Write(Helper.eLogType.Info, "Stopping HyperionClient...");
-            State = ServiceState.Stopping;
 
-            // Set global enabled flag to false
-            Globals.Instance.Enabled = false;
+            // Warm white first, while the network is still up (it stays up >= 5 s after the remote's power-off).
+            // No-op when sync isn't running.
+            if (App.Bulbs != null)
+            {
+                try
+                {
+                    await App.Bulbs.StopToWarmWhiteAsync(TimeSpan.FromSeconds(2));
+                }
+                catch (Exception ex)
+                {
+                    Helper.Log.Write(Helper.eLogType.Warning, $"Error stopping bulb sync: {ex.Message}");
+                }
+            }
+
+            State = ServiceState.Stopping;
 
             // Cancel the cancellation token source
             if (_cancellationTokenSource != null)

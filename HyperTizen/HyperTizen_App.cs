@@ -3,12 +3,15 @@ using Tizen.Applications;
 using Tizen.Applications.Notifications;
 using Tizen.System;
 using System.Threading.Tasks;
+using HyperTizen.Bulbs;
+using HyperTizen.Bulbs.Matter;
 
 namespace HyperTizen
 {
     class App : ServiceApplication
     {
         public static HyperionClient client;
+        public static BulbSync Bulbs; // null when bulbs.json failed to load: service and WebSockets run without sync
         protected override void OnCreate()
         {
             base.OnCreate();
@@ -78,7 +81,32 @@ namespace HyperTizen
                 Helper.Log.Write(Helper.eLogType.Info, "DIAGNOSTIC MODE: Skipping DiagnosticCapture tests");
             }
 
-            // STEP 6: Continue normal startup
+            // STEP 6: Bulb sync (Tuning was loaded from Preference in LoadPreferencesEarly)
+            try
+            {
+                var creds = MatterCredentials.Load(System.IO.Path.Combine(Application.Current.DirectoryInfo.Resource, "bulbs.json"));
+                Action<string> log = msg => Helper.Log.Write(Helper.eLogType.Warning, "[Bulbs] " + msg);
+                // wlan0 is the TV's only interface; the controller resolves its IPv6 scope when connecting
+                Bulbs = new BulbSync(new MatterController(creds, "wlan0", log), creds.Bulbs, () => Globals.Instance.Tuning, log);
+                Helper.Log.Write(Helper.eLogType.Info, $"Bulb sync ready: {creds.Bulbs.Count} bulbs");
+            }
+            catch (Exception ex) // CredentialsException, or a malformed bulb list (duplicate node ids)
+            {
+                // the message never holds file contents (MatterCredentials keeps the key out of it)
+                Helper.Log.Write(Helper.eLogType.Error, $"Bulb sync disabled: {ex.Message}");
+                try
+                {
+                    NotificationManager.Post(new Notification
+                    {
+                        Title = "HyperTizen",
+                        Content = "Bulb sync: credentials missing",
+                        Count = 1
+                    });
+                }
+                catch { /* Ignore notification errors */ }
+            }
+
+            // STEP 7: Continue normal startup
             Display.StateChanged += Display_StateChanged;
             client = new HyperionClient();
 

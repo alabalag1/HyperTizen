@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using HyperTizen.WebSocket.DataTypes;
+using HyperTizen.Bulbs;
 using Rssdp;
 using Tizen.Applications;
 using static HyperTizen.WebSocket.DataTypes.SSDPScanResultEvent;
@@ -475,6 +476,29 @@ namespace HyperTizen.WebSocket
                             }
                         }
                         break;
+                    }
+                case "bulbGamma":
+                case "bulbSmoothMs":
+                case "bulbMinLevel":
+                case "bulbBlack":
+                    {
+                        if (!Tuning.TryParse(setConfigEvent.key, setConfigEvent.value, Globals.Instance.Tuning, out Tuning tuning))
+                        {
+                            Helper.Log.Write(Helper.eLogType.Warning,
+                                $"Rejected {setConfigEvent.key}={setConfigEvent.value}: invalid value, not saved");
+                            return; // before Preference.Set: a bad value is never saved
+                        }
+                        Globals.Instance.Tuning = tuning;
+                        Helper.Log.Write(Helper.eLogType.Info, $"Bulb tuning: {tuning}");
+                        break;
+                    }
+                case "bulbReset":
+                    {
+                        foreach (string key in Globals.TuningKeys)
+                            if (Preference.Contains(key)) Preference.Remove(key);
+                        Globals.Instance.Tuning = Tuning.Default;
+                        Helper.Log.Write(Helper.eLogType.Info, $"Bulb tuning reset: {Tuning.Default}");
+                        return; // nothing to persist
                     }
             }
 

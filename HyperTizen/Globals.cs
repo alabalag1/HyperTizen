@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Tizen.Applications;
+using HyperTizen.Bulbs;
 
 namespace HyperTizen
 {
@@ -38,116 +39,37 @@ namespace HyperTizen
                 return instance;
             }
         }
-        public void SetConfig()
-        {
-            // First, try to use the stored rpcServer preference (user's selection from UI)
-            if (Preference.Contains("rpcServer"))
-            {
-                string rpcServer = Preference.Get<string>("rpcServer");
-                if (!string.IsNullOrEmpty(rpcServer))
-                {
-                    // Parse ws://ip:port format to get the IP
-                    try
-                    {
-                        var uri = new Uri(rpcServer.Replace("ws://", "http://").Replace("wss://", "https://"));
-                        ServerIp = uri.Host;
-
-                        // IMPORTANT: Don't use the WebSocket port (8090)!
-                        // The saved rpcServer is for WebSocket/JSON API, but we need the FlatBuffers port.
-                        // Try SSDP to get the correct FlatBuffers port for this IP
-                        Helper.Log.Write(Helper.eLogType.Info,
-                            $"Config: Saved server IP {ServerIp} from preferences, discovering FlatBuffers port...");
-
-                        (string ssdpIp, int fbsPort) = Helper.SsdpDiscovery.GetHyperIpAndPort();
-
-                        // If SSDP found the same server, use its FlatBuffers port
-                        if (!string.IsNullOrEmpty(ssdpIp) && ssdpIp == ServerIp && fbsPort > 0)
-                        {
-                            ServerPort = fbsPort;
-                            Helper.Log.Write(Helper.eLogType.Info,
-                                $"Config: Using FlatBuffers port {ServerPort} from SSDP for {ServerIp}");
-                        }
-                        else
-                        {
-                            // Fallback to default FlatBuffers port
-                            ServerPort = 19400;
-                            Helper.Log.Write(Helper.eLogType.Warning,
-                                $"Config: SSDP didn't find server, using default FlatBuffers port {ServerPort}");
-                        }
-
-                        // Load enabled preference
-                        LoadEnabledPreference();
-
-                        Width = 3840/8;
-                        Height = 2160/8;
-                        return; // Successfully loaded from preferences
-                    }
-                    catch (Exception ex)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning,
-                            $"Failed to parse saved rpcServer '{rpcServer}': {ex.Message}. Falling back to SSDP discovery.");
-                    }
-                }
-            }
-
-            // Fallback to SSDP discovery if no saved preference or parsing failed
-            Helper.Log.Write(Helper.eLogType.Info, "SSDP: Starting discovery...");
-
-            (string ip, int port) = Helper.SsdpDiscovery.GetHyperIpAndPort();
-
-            if (string.IsNullOrEmpty(ip) || port <= 0)
-            {
-                Helper.Log.Write(Helper.eLogType.Error,
-                    "SSDP FAILED: No HyperHDR found. Check network!");
-                // Set defaults or leave as null for validation later
-                ServerIp = null;
-                ServerPort = 0;
-            }
-            else
-            {
-                Helper.Log.Write(Helper.eLogType.Info,
-                    $"SSDP OK: Found {ip}:{port}");
-                ServerIp = ip;
-                ServerPort = port;
-            }
-
-            // Load enabled preference
-            LoadEnabledPreference();
-
-            Width = 3840/8;
-            Height = 2160/8;
-        }
-
-        private void LoadEnabledPreference()
-        {
-            // Load enabled setting from preferences, defaulting to true if not set
-            string enabledPref = Preference.Contains("enabled") ? Preference.Get<string>("enabled") : "true";
-            Enabled = bool.TryParse(enabledPref, out bool enabledResult) && enabledResult;
-            Helper.Log.Write(Helper.eLogType.Info, $"Loaded enabled setting from preferences: {Enabled}");
-
-            // Load diagnostic mode setting from preferences, defaulting to FALSE for normal operation
-            string diagnosticPref = Preference.Contains("diagnosticMode") ? Preference.Get<string>("diagnosticMode") : "false";
-            DiagnosticMode = bool.TryParse(diagnosticPref, out bool diagnosticResult) && diagnosticResult;
-            Helper.Log.Write(Helper.eLogType.Info, $"Loaded diagnosticMode setting from preferences: {DiagnosticMode}");
-        }
-
         public void LoadPreferencesEarly()
         {
             // Load enabled and diagnosticMode BEFORE any testing
-            string enabledPref = Preference.Contains("enabled") ? Preference.Get<string>("enabled") : "true";
+            string enabledPref = Preference.Contains("enabled") ? Preference.Get<string>("enabled") : "false";
             Enabled = bool.TryParse(enabledPref, out bool enabledResult) && enabledResult;
 
             string diagnosticPref = Preference.Contains("diagnosticMode") ? Preference.Get<string>("diagnosticMode") : "false";
             DiagnosticMode = bool.TryParse(diagnosticPref, out bool diagnosticResult) && diagnosticResult;
 
-            Helper.Log.Write(Helper.eLogType.Info, $"Preferences loaded early - DiagnosticMode: {DiagnosticMode}, Enabled: {Enabled}");
+            // Bulb tuning: a missing or invalid key keeps its default
+            var tuning = Tuning.Default;
+            foreach (string key in TuningKeys)
+            {
+                if (!Preference.Contains(key)) continue;
+                string value = Preference.Get<string>(key);
+                if (!Tuning.TryParse(key, value, tuning, out tuning))
+                    Helper.Log.Write(Helper.eLogType.Warning, $"Ignoring invalid saved {key}={value}, using default");
+            }
+            Tuning = tuning;
+
+            Helper.Log.Write(Helper.eLogType.Info, $"Preferences loaded early - DiagnosticMode: {DiagnosticMode}, Enabled: {Enabled}, Tuning: {Tuning}");
         }
 
-        public string ServerIp; //IP of hyperhdr server
-        public int ServerPort; //Port of hyperhdr server
-        public int Width; //Capture Width
-        public int Height; //Capture Height
-        public bool Enabled; //Is the service enabled
+        public static readonly string[] TuningKeys = { "bulbGamma", "bulbSmoothMs", "bulbMinLevel", "bulbBlack" };
+
+        public string ServerIp; //IP of hyperhdr server (unused: frames go to the bulbs)
+        public int ServerPort; //Port of hyperhdr server (unused)
+        public int Width = 3840/8; //Capture Width
+        public int Height = 2160/8; //Capture Height
+        public volatile Tuning Tuning = Tuning.Default; //Bulb tuning, read by BulbSync every send cycle
+        public bool Enabled; //Persisted "enabled" mirror; App.Configuration.Enabled is what Start() checks
         public bool DiagnosticMode; //Enable diagnostic mode (pauses for 10 minutes after initialization)
         public bool ShowNotifications = false; //Show notification popups on TV (default: false, use new UI instead)
     }
