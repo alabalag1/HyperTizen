@@ -23,22 +23,112 @@ namespace HyperTizen.Bulbs.Tests
             public byte[] Body;
         }
 
-        /// <summary>Answers InvokeRequests with SUCCESS on the installed session; <see cref="Drop"/> loses datagrams.</summary>
+        /// <summary>CASE responder side (Core spec §4.14.2), written from the spec independently of CaseInitiator. The NOC
+        /// is a minimal Matter TLV certificate: subject (tag 6: 17 node id, 21 fabric id) and public key (tag 9).</summary>
+        private sealed class CaseResponder
+        {
+            public ulong NocNode = 1, NocFabric = Creds.FabricId;
+            public bool FlipSignature;
+            public const ushort SessionId = 0x2222;
+            private byte[] _s1, _s2, _shared;
+            public ushort InitiatorSession;
+
+            public byte[] Sigma2(byte[] sigma1)
+            {
+                _s1 = sigma1;
+                byte[] initEph = null;
+                var r = new TlvReader(sigma1);
+                r.Next(); r.EnterContainer();
+                while (r.Next())
+                {
+                    if (r.Tag == 2) InitiatorSession = (ushort)r.GetUInt();
+                    if (r.Tag == 4) initEph = r.GetBytes();
+                }
+                var (ephPriv, ephPub) = SessionCrypto.GenerateP256();
+                var (nocPriv, nocPub) = SessionCrypto.GenerateP256();
+                _shared = SessionCrypto.EcdhP256(ephPriv, initEph);
+                var random = SessionCrypto.RandomBytes(32);
+
+                var w = new TlvWriter();
+                w.StartStructure(Anon);
+                w.StartList(6); w.Put(17, NocNode); w.Put(21, NocFabric); w.EndContainer();
+                w.Put(9, nocPub);
+                w.EndContainer();
+                var noc = w.ToArray();
+
+                w = new TlvWriter();
+                w.StartStructure(Anon); w.Put(1, noc); w.Put(3, ephPub); w.Put(4, initEph); w.EndContainer();
+                var sig = SessionCrypto.SignP256(nocPriv, w.ToArray());
+                if (FlipSignature) sig[10] ^= 0x01;
+
+                w = new TlvWriter();
+                w.StartStructure(Anon); w.Put(1, noc); w.Put(3, sig); w.Put(4, new byte[16]); w.EndContainer();
+                var key = SessionCrypto.Hkdf(_shared, Cat(Creds.Ipk, random, ephPub, SessionCrypto.Sha256(sigma1)), Ascii("Sigma2"), 16);
+                var enc = MessageCodec.Ccm(true, key, Ascii("NCASE_Sigma2N"), null, w.ToArray());
+
+                w = new TlvWriter();
+                w.StartStructure(Anon); w.Put(1, random); w.Put(2, (ulong)SessionId); w.Put(3, ephPub); w.Put(4, enc); w.EndContainer();
+                return _s2 = w.ToArray();
+            }
+
+            /// <summary>Decrypts Sigma3 (throws on a MIC failure) and returns the session keys (I2R, R2I).</summary>
+            public (byte[], byte[]) Finish(byte[] sigma3)
+            {
+                var r = new TlvReader(sigma3);
+                r.Next(); r.EnterContainer(); r.Next();
+                var key = SessionCrypto.Hkdf(_shared, Cat(Creds.Ipk, SessionCrypto.Sha256(Cat(_s1, _s2))), Ascii("Sigma3"), 16);
+                MessageCodec.Ccm(false, key, Ascii("NCASE_Sigma3N"), null, r.GetBytes());
+                var keys = SessionCrypto.Hkdf(_shared, Cat(Creds.Ipk, SessionCrypto.Sha256(Cat(_s1, _s2, sigma3))), Ascii("SessionKeys"), 48);
+                return (keys.Take(16).ToArray(), keys.Skip(16).Take(16).ToArray());
+            }
+
+            private static byte[] Ascii(string s) => System.Text.Encoding.ASCII.GetBytes(s);
+            private static byte[] Cat(params byte[][] p) => p.SelectMany(x => x).ToArray();
+        }
+
+        private const int Anon = TlvWriter.Anonymous;
+
+        /// <summary>Answers InvokeRequests with SUCCESS on its session; <see cref="Drop"/> loses datagrams. With
+        /// <see cref="Case"/> set it also answers CASE; otherwise a session is pre-installed.</summary>
         private sealed class FakeBulb
         {
-            public readonly byte[] I2R = Enumerable.Range(0, 16).Select(i => (byte)i).ToArray();
-            public readonly byte[] R2I = Enumerable.Range(16, 16).Select(i => (byte)i).ToArray();
-            public const ushort CtrlSession = 0x1111, BulbSession = 0x2222;
+            public byte[] I2R = Enumerable.Range(0, 16).Select(i => (byte)i).ToArray();
+            public byte[] R2I = Enumerable.Range(16, 16).Select(i => (byte)i).ToArray();
+            public ushort CtrlSession = 0x1111;
+            public const ushort BulbSession = CaseResponder.SessionId;
             public const ulong Node = 1;
             public readonly List<Sent> Received = new List<Sent>();
             public Func<Sent, bool> Drop = _ => false;
             public MatterController C;
+            public CaseResponder Case;
+            public bool ResendSigma2BeforeStatus;
             private uint _counter = 500;
+            private byte[] _sigma2Datagram;
 
-            public FakeBulb()
+            public FakeBulb(CaseResponder caseResponder = null)
             {
+                Case = caseResponder;
                 C = new MatterController(Creds, Send, _ => { }) { BaseInterval = TimeSpan.FromMilliseconds(10), ResponseTimeout = TimeSpan.FromMilliseconds(200) };
-                C.InstallSession(Node, new SecureSession(CtrlSession, BulbSession, Node, I2R, R2I, new IPEndPoint(IPAddress.IPv6Loopback, 5540)));
+                if (Case == null)
+                    C.InstallSession(Node, new SecureSession(CtrlSession, BulbSession, Node, I2R, R2I, new IPEndPoint(IPAddress.IPv6Loopback, 5540)));
+            }
+
+            private void AnswerCase(Sent s, byte[] body)
+            {
+                byte[] Reply(byte opcode, byte[] payload) => MessageCodec.EncodeUnsecured(_counter++,
+                    new ProtocolHeader { Opcode = opcode, ExchangeId = s.Proto.ExchangeId, ProtocolId = 0, NeedsAck = true, AckCounter = s.Header.Counter }
+                        .Encode().Concat(payload).ToArray(), null, s.Header.SourceNodeId);
+                if (s.Proto.Opcode == 0x30)
+                {
+                    C.OnDatagram(_sigma2Datagram = Reply(0x31, Case.Sigma2(body)));
+                }
+                else if (s.Proto.Opcode == 0x32)
+                {
+                    (I2R, R2I) = Case.Finish(body);
+                    CtrlSession = Case.InitiatorSession;
+                    if (ResendSigma2BeforeStatus) C.OnDatagram(_sigma2Datagram); // MRP retransmit: our ack was lost
+                    C.OnDatagram(Reply(0x40, new byte[8])); // StatusReport SUCCESS: general 0, protocol 0, code 0
+                }
             }
 
             public IEnumerable<Sent> Invokes => Received.Where(s => s.Proto.ProtocolId == 1 && s.Proto.Opcode == 0x08);
@@ -52,11 +142,12 @@ namespace HyperTizen.Bulbs.Tests
                 s.Proto = ProtocolHeader.Decode(plain, out int off);
                 s.Body = plain.Skip(off).ToArray();
                 lock (Received) Received.Add(s);
+                if (s.Header.SessionId == 0 && Case != null && !Drop(s)) { AnswerCase(s, s.Body); return Task.CompletedTask; }
                 if (s.Header.SessionId != BulbSession || Drop(s) || s.Proto.Opcode != 0x08) return Task.CompletedTask;
 
                 // InvokeResponse { 0: false, 1: [ { 1: CommandStatusIB { 0: path, 1: { 0: SUCCESS } } } ], 255: 11 }
                 var w = new TlvWriter();
-                w.StartStructure(TlvWriter.Anonymous);
+                w.StartStructure(Anon);
                 w.Put(0, false);
                 w.StartArray(1);
                 w.StartStructure(TlvWriter.Anonymous);
@@ -110,6 +201,46 @@ namespace HyperTizen.Bulbs.Tests
             Assert.Equal(0, first.Proto.ProtocolId);
             Assert.Equal(0x30, first.Proto.Opcode);
             Assert.NotNull(first.Header.SourceNodeId); // CHIP drops unsecured initiator messages without one
+        }
+
+        [Fact]
+        public async Task DuplicateSigma2_DuringSigma3_IsIgnored()
+        {
+            var b = new FakeBulb(new CaseResponder()) { ResendSigma2BeforeStatus = true };
+            Assert.True(await b.C.MoveToHueAndSaturation(1, 200, 254, 20, CancellationToken.None));
+            var sigma3 = b.Received.Single(s => s.Header.SessionId == 0 && s.Proto.Opcode == 0x32);
+            Assert.NotNull(sigma3.Proto.AckCounter); // Sigma3 piggybacks the Sigma2 ack
+            Assert.Single(b.Invokes);
+        }
+
+        private static byte[] Sigma2For(CaseInitiator ci, CaseResponder r) => r.Sigma2(ci.Sigma1());
+
+        [Fact]
+        public void Case_Sigma2_AcceptsValidPeer()
+        {
+            var ci = new CaseInitiator(Creds, 1, 0x1111);
+            Assert.NotEmpty(ci.Sigma3(Sigma2For(ci, new CaseResponder())));
+        }
+
+        [Fact]
+        public void Case_Sigma2_RejectsBadSignature()
+        {
+            var ci = new CaseInitiator(Creds, 1, 0x1111);
+            Assert.Throws<CaseException>(() => ci.Sigma3(Sigma2For(ci, new CaseResponder { FlipSignature = true })));
+        }
+
+        [Fact]
+        public void Case_Sigma2_RejectsWrongNodeId()
+        {
+            var ci = new CaseInitiator(Creds, 1, 0x1111);
+            Assert.Throws<CaseException>(() => ci.Sigma3(Sigma2For(ci, new CaseResponder { NocNode = 2 })));
+        }
+
+        [Fact]
+        public void Case_Sigma2_RejectsWrongFabricId()
+        {
+            var ci = new CaseInitiator(Creds, 1, 0x1111);
+            Assert.Throws<CaseException>(() => ci.Sigma3(Sigma2For(ci, new CaseResponder { NocFabric = Creds.FabricId + 1 })));
         }
 
         [Fact]

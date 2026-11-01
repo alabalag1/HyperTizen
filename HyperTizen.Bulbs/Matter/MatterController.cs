@@ -30,11 +30,13 @@ namespace HyperTizen.Bulbs.Matter
         {
             public ProtocolHeader Proto;
             public byte[] Body;
+            public uint Counter; // the peer's message counter
         }
 
         private sealed class Pending
         {
             public uint Counter;
+            public uint? Routed; // peer counter already handled on this exchange; a copy of it is a duplicate
             public readonly TaskCompletionSource<bool> Acked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             public readonly TaskCompletionSource<Msg> Response = new TaskCompletionSource<Msg>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
@@ -156,7 +158,8 @@ namespace HyperTizen.Bulbs.Matter
                 try { s3 = cs.Sigma3(s2.Body); }
                 catch (CaseException e) { _log("matter: node " + node.Bulb.NodeId + " bad Sigma2: " + e.Message); return null; }
 
-                var st = await Request(null, exch, ProtoSecureChannel, CaseInitiator.OpSigma3, s3, eph, ct, ep).ConfigureAwait(false);
+                // Sigma3 acks Sigma2 (as matter.js does), and that counter marks Sigma2 retransmits as duplicates
+                var st = await Request(null, exch, ProtoSecureChannel, CaseInitiator.OpSigma3, s3, eph, ct, ep, s2.Counter).ConfigureAwait(false);
                 if (st == null || st.Proto.Opcode != OpStatusReport || st.Body.Length < 8 || Bin.Get16(st.Body, 0) != 0 || Bin.Get16(st.Body, 6) != 0)
                 {
                     _log("matter: node " + node.Bulb.NodeId + " Sigma3 not accepted: " + (st == null ? "no answer" : Describe(st)));
@@ -178,16 +181,18 @@ namespace HyperTizen.Bulbs.Matter
         /// <summary>Sends a reliable message on a new exchange and waits for the response. Returns null when MRP gives up
         /// or no response follows the ack in time.</summary>
         /// <param name="s">null for the unsecured session (CASE), with <paramref name="eph"/> our ephemeral node id</param>
-        private async Task<Msg> Request(SecureSession s, ushort exch, ushort proto, byte opcode, byte[] body, ulong eph, CancellationToken ct, IPEndPoint ep = null)
+        /// <param name="ackCounter">the peer message on this exchange this one acknowledges; copies of it are then ignored</param>
+        private async Task<Msg> Request(SecureSession s, ushort exch, ushort proto, byte opcode, byte[] body, ulong eph, CancellationToken ct,
+            IPEndPoint ep = null, uint? ackCounter = null)
         {
             EnsureSocket();
-            var p = new Pending();
+            var p = new Pending { Routed = ackCounter };
             var key = (s?.LocalId ?? 0, exch);
             _pending[key] = p;
             try
             {
                 p.Counter = s?.NextCounter() ?? (uint)Interlocked.Increment(ref _unsecuredCounter);
-                var ph = new ProtocolHeader { Initiator = true, NeedsAck = true, Opcode = opcode, ExchangeId = exch, ProtocolId = proto }.Encode();
+                var ph = new ProtocolHeader { Initiator = true, NeedsAck = true, Opcode = opcode, ExchangeId = exch, ProtocolId = proto, AckCounter = ackCounter }.Encode();
                 var payload = new byte[ph.Length + body.Length];
                 Buffer.BlockCopy(ph, 0, payload, 0, ph.Length);
                 Buffer.BlockCopy(body, 0, payload, ph.Length, body.Length);
@@ -228,18 +233,21 @@ namespace HyperTizen.Bulbs.Matter
                 if (sid == 0) plain = MessageCodec.DecodeUnsecured(d, out h);
                 else if (_sessions.TryGetValue(sid, out s)) plain = MessageCodec.DecodeSecured(d, s.DecryptKey, s.PeerNodeId, out h);
                 else return; // a session we dropped
-                // ponytail: no duplicate detection (Core spec §4.6.5); duplicates are re-acked and find no pending exchange
+                // ponytail: no per-session duplicate window (Core spec §4.6.5). A duplicate is re-acked; it is dropped if its
+                // exchange is finished, or if its counter is the one already routed on the pending exchange (Pending.Routed:
+                // e.g. a Sigma2 retransmit while Sigma3 waits on the same exchange). Upgrade: a counter window per session.
 
                 var proto = ProtocolHeader.Decode(plain, out int off);
                 if (proto.NeedsAck) SendAck(s, h, proto, from);
-                if (!_pending.TryGetValue((sid, proto.ExchangeId), out var p)) return;
+                if (!_pending.TryGetValue((sid, proto.ExchangeId), out var p) || p.Routed == h.Counter) return;
                 bool standaloneAck = proto.ProtocolId == ProtoSecureChannel && proto.Opcode == OpStandaloneAck;
                 if (proto.AckCounter == p.Counter || !standaloneAck) p.Acked.TrySetResult(true);
                 if (!standaloneAck)
                 {
                     var body = new byte[plain.Length - off];
                     Buffer.BlockCopy(plain, off, body, 0, body.Length);
-                    p.Response.TrySetResult(new Msg { Proto = proto, Body = body });
+                    p.Routed = h.Counter;
+                    p.Response.TrySetResult(new Msg { Proto = proto, Body = body, Counter = h.Counter });
                 }
             }
             catch (Exception e)
