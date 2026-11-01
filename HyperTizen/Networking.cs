@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Google.FlatBuffers;
 using hyperhdrnet;
@@ -14,6 +15,8 @@ namespace HyperTizen
     public static class Networking
     {
         private static readonly object _lock = new object();
+        // One frame on the wire at a time: concurrent WriteAsync calls interleave and corrupt the size-prefixed stream.
+        private static readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
         private static TcpClient _client;
         private static NetworkStream _stream;
 
@@ -511,6 +514,8 @@ namespace HyperTizen
 
         static async Task SendMessageAndReceiveReplyAsync(byte[] message)
         {
+            if (!_sendGate.Wait(0))
+                return; // previous frame still being written: drop this one, the next frame is newer anyway
             try
             {
                 NetworkStream localStream;
@@ -543,6 +548,10 @@ namespace HyperTizen
                 Helper.Log.Write(Helper.eLogType.Error, "SendMessageAndReceiveReply: Exception (closing tcp client now) Sending/Receiving: " + ex.Message);
                 DisconnectClient();
                 return;
+            }
+            finally
+            {
+                _sendGate.Release();
             }
         }
 

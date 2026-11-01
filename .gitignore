@@ -7,3 +7,5 @@ bin
 .sign
 *.wgt
 references/tizen9_os_files
+HyperTizen/out/
+HyperTizen/res/bulbs.json
