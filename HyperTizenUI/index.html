@@ -200,20 +200,24 @@
             // Focus management for remote control
             setupFocusManagement();
 
-            // Get device IP and initialize WebSocket connections
-            fetch('http://127.0.0.1:8081')
-                .then(res => res.text())
-                .then(ip => {
-                    window.deviceIP = ip;
-                    initializeApp(ip);
-                })
-                .catch(err => {
-                    // Standalone install (no TizenBrew server): the service runs on this same TV
-                    console.log('No TizenBrew server, using 127.0.0.1:', err);
-                    window.deviceIP = '127.0.0.1';
-                    initializeApp('127.0.0.1');
-                });
+            // The service runs on this same TV, but a web app can't reach it on 127.0.0.1 (verified on the
+            // S90D): connect to the TV's own LAN address instead.
+            lanIp(initializeApp);
         };
+
+        function lanIp(cb) {
+            const fallback = function () { cb('127.0.0.1'); };
+            try {
+                tizen.systeminfo.getPropertyValue('WIFI_NETWORK', function (w) {
+                    if (w.ipAddress) return cb(w.ipAddress);
+                    tizen.systeminfo.getPropertyValue('ETHERNET_NETWORK', function (e) {
+                        e.ipAddress ? cb(e.ipAddress) : fallback();
+                    }, fallback);
+                }, fallback);
+            } catch (e) {
+                fallback();
+            }
+        }
 
         function setupFocusManagement() {
             let focusableElements = [];

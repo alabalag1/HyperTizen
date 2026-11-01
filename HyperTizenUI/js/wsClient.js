@@ -443,14 +443,12 @@ function startCapture() {
     // No device needed: the service drives the Matter bulbs directly.
     addLog('Info', 'Starting capture...');
     send({ Event: Events.SetConfig, key: 'enabled', value: 'true' });
-    updateCaptureState(true);
     send({ Event: Events.ReadConfig, key: 'enabled' });
 }
 
 function stopCapture() {
     addLog('Info', 'Stopping capture...');
     send({ Event: Events.SetConfig, key: 'enabled', value: 'false' });
-    updateCaptureState(false);
     send({ Event: Events.ReadConfig, key: 'enabled' });
 }
 

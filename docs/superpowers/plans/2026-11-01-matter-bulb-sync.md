@@ -582,7 +582,7 @@ Build `1574848`, plus the standalone control app (`bdc57ba`).
 
 **Found during acceptance:** the pinwheel tile in My Apps was the HyperTizen *service* package. A service has no UI, so Samsung shows "Please wait a moment and try again" when it's opened. TizenBrew was never installed on this TV, so the control app never existed there.
 
-**Fix (owner's choice: standalone, no push):** `HyperTizenUI` is now packaged as its own wgt (`6jwjAZfoVq.HyperTizenUI`), installed from the Mac with the HyperTizen signing profile. When opened, it starts the service itself (`js/service.js`) and talks to it on `127.0.0.1`. The owner confirmed the app shows its controls and sync starts after the service was stopped.
+**Fix (owner's choice: standalone, no push):** `HyperTizenUI` is now packaged as its own wgt (`6jwjAZfoVq.HyperTizenUI`), installed from the Mac with the HyperTizen signing profile. When opened, it starts the service itself (`js/service.js`) and talks to it on the TV's own LAN address (from `tizen.systeminfo`). A web app can't reach the service on `127.0.0.1`, and the CSP needs explicit ports (`ws://*:*`), since `ws://*` only allows port 80. Until 2026-11-01 13:28 neither worked, so the app's buttons did nothing. Sync only started because opening the app launched the service. The owner confirmed the app shows its controls and sync starts after the service was stopped.
 
 To rebuild and reinstall the control app from `HyperTizenUI/`:
 1. Copy the files to an empty folder.
