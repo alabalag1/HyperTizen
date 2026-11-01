@@ -104,6 +104,7 @@ namespace HyperTizen.Bulbs.Tests
             public MatterController C;
             public CaseResponder Case;
             public bool ResendSigma2BeforeStatus;
+            public int Sigma2DelayMs; // > 0: ack Sigma1 at once, answer it this much later (slow bulb crypto)
             private uint _counter = 500;
             private byte[] _sigma2Datagram;
 
@@ -120,7 +121,13 @@ namespace HyperTizen.Bulbs.Tests
                 byte[] Reply(byte opcode, byte[] payload) => MessageCodec.EncodeUnsecured(_counter++,
                     new ProtocolHeader { Opcode = opcode, ExchangeId = s.Proto.ExchangeId, ProtocolId = 0, NeedsAck = true, AckCounter = s.Header.Counter }
                         .Encode().Concat(payload).ToArray(), null, s.Header.SourceNodeId);
-                if (s.Proto.Opcode == 0x30)
+                if (s.Proto.Opcode == 0x30 && Sigma2DelayMs > 0)
+                {
+                    C.OnDatagram(MessageCodec.EncodeUnsecured(_counter++, new ProtocolHeader
+                        { Opcode = 0x10, ExchangeId = s.Proto.ExchangeId, ProtocolId = 0, AckCounter = s.Header.Counter }.Encode(), null, s.Header.SourceNodeId));
+                    _ = Task.Delay(Sigma2DelayMs).ContinueWith(_ => C.OnDatagram(_sigma2Datagram = Reply(0x31, Case.Sigma2(body))));
+                }
+                else if (s.Proto.Opcode == 0x30)
                 {
                     C.OnDatagram(_sigma2Datagram = Reply(0x31, Case.Sigma2(body)));
                 }
@@ -219,6 +226,17 @@ namespace HyperTizen.Bulbs.Tests
             b.C.BaseInterval = TimeSpan.FromMilliseconds(1);
             for (int i = 0; i < 25; i++) Assert.False(await b.C.MoveToLevelWithOnOff(1, 128, 0, CancellationToken.None));
             Assert.InRange(b.Log.Count, 1, 8);
+        }
+
+        [Fact]
+        public async Task SlowSigma2_WaitsSigma2Timeout_NotResponseTimeout()
+        {
+            var b = new FakeBulb(new CaseResponder()) { Sigma2DelayMs = 500 };   // ResponseTimeout is 200 ms
+            Assert.True(await b.C.MoveToLevelWithOnOff(1, 128, 0, CancellationToken.None));
+
+            b = new FakeBulb(new CaseResponder()) { Sigma2DelayMs = 500 };
+            b.C.Sigma2Timeout = TimeSpan.FromMilliseconds(100);
+            Assert.False(await b.C.MoveToLevelWithOnOff(1, 128, 0, CancellationToken.None));
         }
 
         [Fact]
