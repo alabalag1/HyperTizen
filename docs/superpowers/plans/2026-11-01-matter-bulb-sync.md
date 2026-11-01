@@ -527,7 +527,7 @@ This captures how today's chain turns raw samples into LED colours, so the C# po
   3. Near-black scenes don't flicker.
   4. Sync off leads to warm white.
   5. Remote power-off leads to warm white.
-  6. A cold boot with sync left on starts syncing by itself.
+  6. After a cold boot with sync left on, opening the HyperTizen app once starts syncing. Autostart at boot isn't required; the owner accepted this.
      - Waking from standby with sync on resumes syncing.
      - Waking from standby or a cold boot with sync off leaves the bulbs alone.
      - Turning the TV off with sync off sends nothing, so bulbs that are off stay off.
@@ -540,3 +540,26 @@ This captures how today's chain turns raw samples into LED colours, so the C# po
   ```bash
   git commit -m "chore: remove temp logging; acceptance results"
   ```
+
+## Probe results
+
+Recorded 2026-11-01 from Task 1 (probe build on the real TV).
+
+**Network (mDNS over IPv6)**
+- Interface `wlan0`, IPv6 scope id 3. Replies come back unicast, so no multicast join and no port 5353 binding is needed.
+- Both bulbs answered mDNS, each with an AAAA record, port 5540:
+  - node 1: `fe80::dafc:92ff:fed2:91c5` / 192.168.0.10
+  - node 2: `fe80::dafc:92ff:fed2:8796` / 192.168.0.11
+- Operational instance names: `10DCB99FEC339D2C-0000000000000001` and `10DCB99FEC339D2C-0000000000000002`.
+- Each device advertises several fabrics. Match the exact instance name, not just `_matter._tcp`.
+- Node 2's reply is split over 2 datagrams. Merge datagrams from the same source.
+- A third Matter device at `fe80::dafc:92ff:fed2:9459` also answers. Ignore it.
+
+**Standby**
+- All 50 "display-off" datagrams arrived over the full 5 s after `Off`. The network stays up for at least 5 s, and the service keeps running in standby.
+
+**Wake**
+- `Display Normal` restarted capture by itself.
+
+**Cold boot**
+- The service does NOT start by itself. The owner accepted opening the app once after a cold boot (spec goal 3 and Task 13 check 6 are updated accordingly).

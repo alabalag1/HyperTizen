@@ -24,7 +24,9 @@ The owner wants the Mac out of the loop. The TV should sample the screen, turn i
      - hue held when the screen is near-black
      - a continuous brightness curve with a floor
      - colour and brightness tracked separately
-3. **Turn sync on or off from the TV app.** This reuses the app's existing `enabled` setting. The choice persists: if sync was on, it starts by itself when the TV starts.
+3. **Turn sync on or off from the TV app.** This reuses the app's existing `enabled` setting. The choice persists: if sync was on, it resumes by itself when the TV wakes from standby.
+
+   After a cold boot (unplugged, power cut, firmware reboot), the owner opens the HyperTizen app once. The owner accepted this on 2026-11-01, after a probe showed the service doesn't start at boot.
 4. **Tune from the TV app.** Four values with today's defaults:
    - Dark-scene curve (gamma), default 1
    - Fade time constant, default 300 ms
