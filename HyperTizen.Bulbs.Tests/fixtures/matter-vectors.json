@@ -1,0 +1,100 @@
+{
+  "generator": "matter.js 0.18.0 (gen-vectors.mjs)",
+  "tlv": [
+    {
+      "name": "MoveToHueAndSaturation",
+      "cluster": 768,
+      "command": 6,
+      "fields": {
+        "hue": 200,
+        "saturation": 254,
+        "transitionTime": 1,
+        "optionsMask": 0,
+        "optionsOverride": 0
+      },
+      "hex": "15280028013602153700240001250100032402061835012400c82401fe24020124030024040018181824ff0b18"
+    },
+    {
+      "name": "MoveToLevelWithOnOff",
+      "cluster": 8,
+      "command": 4,
+      "fields": {
+        "level": 128,
+        "transitionTime": 1,
+        "optionsMask": 0,
+        "optionsOverride": 0
+      },
+      "hex": "1528002801360215370024000124010824020418350124008024010124020024030018181824ff0b18"
+    },
+    {
+      "name": "MoveToColorTemperature",
+      "cluster": 768,
+      "command": 10,
+      "fields": {
+        "colorTemperatureMireds": 370,
+        "transitionTime": 1,
+        "optionsMask": 0,
+        "optionsOverride": 0
+      },
+      "hex": "152800280136021537002400012501000324020a1835012500720124010124020024030018181824ff0b18"
+    },
+    {
+      "name": "MoveToLevel",
+      "cluster": 8,
+      "command": 0,
+      "fields": {
+        "level": 44,
+        "transitionTime": 0,
+        "optionsMask": 0,
+        "optionsOverride": 0
+      },
+      "hex": "1528002801360215370024000124010824020018350124002c24010024020024030018181824ff0b18"
+    }
+  ],
+  "protocolHeader": {
+    "exchangeFlags": 7,
+    "opcode": 8,
+    "exchangeId": 43981,
+    "protocolId": 1,
+    "ackCounter": 287454020,
+    "hex": "0708cdab010044332211"
+  },
+  "message": {
+    "key": "000102030405060708090a0b0c0d0e0f",
+    "sessionId": 4660,
+    "counter": 16909060,
+    "sourceNodeId": "1234605616436508552",
+    "plaintext": "0508cdab010015280028013602153700240001250100032402061835012400c82401fe24020124030024040018181824ff0b18",
+    "header": "0034120004030201",
+    "nonce": "00040302018877665544332211",
+    "datagram": "0034120004030201fa4f73c822a5438f38f232d604960beba1f789d9cc65fa5b5666c1538648ca32c51c7a95b3408eeb369d9da011954f1979f896ff981f8dfc32eef2b5891cbbb1e19938"
+  },
+  "hkdf": {
+    "ikm": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "salt": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+    "info": "53657373696f6e4b657973",
+    "length": 48,
+    "okm": "cbd470c5d44aff06a52c2d201a55cdcc693b149bc49e80bbce2a56298c02926b17c7fb2c36efc0272f4b3aad30fb8d20"
+  },
+  "ecdh": {
+    "privA": "1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a7988",
+    "pubA": "04bd7c73b88b2e9b4ceda62022b2da8be13193a5b56edc26e7df7842e24cd0b5eb0605ada7bda83ac6a2b80d7e314040fa47ff16b83bac85cedb014451bb7ce71a",
+    "privB": "0a0b0c0d0e0f10111213141516171819a1a2a3a4a5a6a7a8a9aaabacadaeafb0",
+    "pubB": "04d1ed27b3daf1d13c269f3af65eaf36a80278f2c9384cc69cf0fa364c96298b133312f476337b437fde9a99c5ef167f7298cdbd1631e93253740ce29b375ad0f3",
+    "shared": "8b290240ab4c9a13f8c854de4053408afc80bc9b356c242690395b5d55faa163"
+  },
+  "ecdsa": {
+    "pub": "04bd7c73b88b2e9b4ceda62022b2da8be13193a5b56edc26e7df7842e24cd0b5eb0605ada7bda83ac6a2b80d7e314040fa47ff16b83bac85cedb014451bb7ce71a",
+    "msg": "487970657254697a656e207369676d61332074657374206d657373616765",
+    "sig": "48dc02b78639cb3cad1d2eedadc23ab8774308e2ccf82bf63e00714735a1c185449efcf79e4eba55d7a5b64a2275225e25519e6a98f204da05785ba3d67e2096"
+  },
+  "sha256": {
+    "msg": "487970657254697a656e207369676d61332074657374206d657373616765",
+    "digest": "33e69e6d8d31c6ef176d5750841fff6d929cd941dfe706eaae9b3d5064da9433"
+  },
+  "hmacSha256": {
+    "key": "000102030405060708090a0b0c0d0e0f",
+    "msg": "487970657254697a656e207369676d61332074657374206d657373616765",
+    "mac": "21b0dcaf2af949f7481c0fad8496d34e6e4a469e3f1157a8796b39abdce47d75"
+  }
+}
