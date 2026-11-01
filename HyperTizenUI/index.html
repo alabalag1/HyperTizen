@@ -7,6 +7,8 @@
     <title>HyperTizen Control Center</title>
     <link rel="stylesheet" href="main.css">
     <script src="js/wsClient.js"></script>
+    <!-- Standalone install: start the HyperTizen service ourselves (TizenBrew runs this file as its service) -->
+    <script src="js/service.js"></script>
     <script type="text/javascript" src="$WEBAPIS/webapis/webapis.js"></script>
 </head>
 
@@ -206,9 +208,10 @@
                     initializeApp(ip);
                 })
                 .catch(err => {
-                    console.error('Failed to get device IP:', err);
-                    addLog('Error', 'Failed to get device IP. Retrying...');
-                    setTimeout(() => location.reload(), 3000);
+                    // Standalone install (no TizenBrew server): the service runs on this same TV
+                    console.log('No TizenBrew server, using 127.0.0.1:', err);
+                    window.deviceIP = '127.0.0.1';
+                    initializeApp('127.0.0.1');
                 });
         };
 
