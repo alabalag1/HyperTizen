@@ -565,7 +565,6 @@ namespace HyperTizen.Capture
         /// OPTIMIZED: Sets ALL positions first, then ONE sleep, then reads ALL pixels
         /// This ensures all sampling happens at the same moment for temporal consistency
         /// </summary>
-        private int _frameCount = 0;
         private Color[] GetColors()
         {
             Color[] colorData = new Color[_capturedPoints.Length];
@@ -646,15 +645,6 @@ namespace HyperTizen.Capture
                     colorData[i] = color;
                     i++;
                 }
-            }
-
-            // ponytail: raw dump every 100 frames to check the value range on this firmware; remove once settled
-            if (_frameCount++ % 100 == 0)
-            {
-                var parts = new string[colorData.Length];
-                for (int k = 0; k < colorData.Length; k++)
-                    parts[k] = $"{colorData[k].R},{colorData[k].G},{colorData[k].B}";
-                Helper.Log.Write(Helper.eLogType.Info, "PixelSampling raw: " + string.Join(" ", parts));
             }
 
             return colorData;
